@@ -69,6 +69,7 @@ def test_rejects_bad_generated_output(tmp_path, mode, status):
         assert response.status_code == status
         assert 'private detail' not in response.text
         assert 'citations' not in response.json()
+        assert client.get(f'/v1/notebooks/{nid}/history', headers=headers).json()['turns'] == []
     app.state.engine.dispose()
 
 

@@ -3,6 +3,7 @@
 Local retrieval is explicitly extractive, not a generative model or vector search.
 """
 import hashlib
+import json
 import hmac
 import os
 from pathlib import Path
@@ -14,10 +15,11 @@ from typing import Literal
 from knowlm.retrieval import Evidence, retrieve
 from knowlm.generation import CitationError, ProviderError, validate_answer
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, LargeBinary, create_engine, select, update
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, LargeBinary, JSON, UniqueConstraint, Index, create_engine, select, update, delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -82,6 +84,23 @@ class IngestionJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class ChatTurn(Base):
+    """An immutable, atomic question + validated answer snapshot, never a draft."""
+    __tablename__ = 'chat_turns'
+    __table_args__ = (UniqueConstraint('notebook_id', 'request_id', name='uq_turn_request'),
+                      Index('ix_chat_turns_notebook_id_id', 'notebook_id', 'id'),
+                      {'sqlite_autoincrement': True})
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    notebook_id: Mapped[str] = mapped_column(ForeignKey('notebooks.id'))
+    request_id: Mapped[str] = mapped_column(String(36))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    question: Mapped[str] = mapped_column(Text)
+    source_ids: Mapped[list] = mapped_column(JSON)
+    mode: Mapped[str] = mapped_column(String(20))
+    answer: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=40, pattern=r'^[a-zA-Z0-9_]+$')
     password: str = Field(min_length=10, max_length=128)
@@ -97,6 +116,7 @@ class TextInput(BaseModel):
 
 
 class Question(BaseModel):
+    request_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     question: str = Field(min_length=1, max_length=2000, pattern=r'\S')
     source_ids: list[str] | None = Field(default=None, max_length=100)
     mode: Literal["extractive", "grounded"] = "extractive"
@@ -117,7 +137,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.4.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.5.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     bearer = HTTPBearer(auto_error=False)
 
@@ -304,9 +324,66 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             raise HTTPException(404, 'Page text not found')
         return {'source_id': source_id, 'page': page, 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
 
+    def turn_snapshot(turn):
+        return {'id': turn.id, 'request_id': turn.request_id, 'question': turn.question,
+                'source_ids': turn.source_ids, 'mode': turn.mode,
+                'created_at': turn.created_at.replace(tzinfo=timezone.utc).isoformat(),
+                'answer': turn.answer}
+
+    def answer_snapshot(turn):
+        return {**turn.answer, 'turn_id': turn.id, 'request_id': turn.request_id,
+                'created_at': turn.created_at.replace(tzinfo=timezone.utc).isoformat()}
+
+    @app.get('/v1/notebooks/{notebook_id}/history')
+    def history(notebook_id: str, limit: int = Query(40, ge=1, le=100),
+                before: int | None = Query(None, ge=1, le=9223372036854775807), user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        query = select(ChatTurn).where(ChatTurn.notebook_id == notebook_id)
+        if before is not None:
+            query = query.where(ChatTurn.id < before)
+        rows = session.scalars(query.order_by(ChatTurn.id.desc()).limit(limit + 1)).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return {'turns': [turn_snapshot(t) for t in reversed(rows)],
+                'next_before': rows[-1].id if has_more else None}
+
+    @app.delete('/v1/notebooks/{notebook_id}/history', status_code=204)
+    def clear_history(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        session.execute(delete(ChatTurn).where(ChatTurn.notebook_id == notebook_id))
+        session.commit()
+
     @app.post('/v1/notebooks/{notebook_id}/ask')
     def ask(notebook_id: str, body: Question, user_id=Depends(current_user), session: Session = Depends(db)):
         owned(notebook_id, user_id, session)
+        request_id = str(body.request_id)
+        request_data = {'question': body.question, 'mode': body.mode,
+                        'source_ids': sorted(set(body.source_ids)) if body.source_ids is not None else None}
+        request_hash = hashlib.sha256(json.dumps(request_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        previous = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.request_id == request_id))
+        if previous:
+            if previous.request_hash != request_hash:
+                raise HTTPException(409, 'Request ID was already used for a different question')
+            return answer_snapshot(previous)
+
+        def persist(answer):
+            # Persist question and complete validated answer in one transaction.
+            # No draft or invalid provider output is ever written to history.
+            turn = ChatTurn(notebook_id=notebook_id, request_id=request_id,
+                            request_hash=request_hash, question=body.question,
+                            source_ids=sorted({e.source_id for e in candidates}), mode=body.mode, answer=answer)
+            session.add(turn)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                turn = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.request_id == request_id))
+                if not turn:
+                    raise
+                if turn.request_hash != request_hash:
+                    raise HTTPException(409, 'Request ID was already used for a different question')
+            return answer_snapshot(turn)
+
         query = select(Chunk, Source).join(Source, Source.id == Chunk.source_id).where(Source.notebook_id == notebook_id, Source.status == 'ready')
         if body.source_ids is not None:
             allowed = set(session.scalars(select(Source.id).where(Source.notebook_id == notebook_id)))
@@ -339,15 +416,15 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                     citations.append(citation(lookup[reference.chunk_id], reference.quote))
                     markers.append(f'[{len(citations)}]')
                 rendered.append(claim.text + ' ' + ' '.join(markers))
-            return {'mode': 'grounded', 'answered': bool(rendered),
+            return persist({'mode': 'grounded', 'answered': bool(rendered),
                     'answer': '\n\n'.join(rendered) if rendered else 'لا توجد معلومات كافية في المصادر المحددة.',
                     'citations': citations, 'retrieval': 'bm25_char_rrf',
-                    'notice': 'تم التحقق من وجود الاقتباسات في المصادر؛ هذا لا يضمن صحة كل استنتاج دلاليًا.'}
+                    'notice': 'تم التحقق من وجود الاقتباسات في المصادر؛ هذا لا يضمن صحة كل استنتاج دلاليًا.'})
         citations = [citation(item, item.text) for item in evidence]
-        return {'mode': body.mode, 'answered': bool(citations),
+        return persist({'mode': body.mode, 'answered': bool(citations),
                 'answer': '\n\n'.join(f'{c["quote"]} [{i}]' for i, c in enumerate(citations, 1)) if citations else 'لا توجد معلومات كافية في المصادر المحددة.',
                 'citations': citations, 'retrieval': 'bm25_char_rrf',
-                'notice': 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'}
+                'notice': 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
     return app
 

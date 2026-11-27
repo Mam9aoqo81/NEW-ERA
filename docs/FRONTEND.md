@@ -1,4 +1,4 @@
-# KnowLM web study workspace (0.4)
+# KnowLM web study workspace (0.5)
 
 ## Scope
 
@@ -9,6 +9,8 @@ quality badges or simulated model responses.
 
 - Registration, login, session restoration through `GET /v1/auth/me`, server logout.
 - Create/select private notebooks.
+- Persist and restore complete question/answer/citation snapshots per notebook,
+  with keyset pagination, explicit confirmed deletion and idempotent request retries.
 - Add pasted text or enqueue PDF extraction; poll source states every 3.5 seconds.
 - Failed jobs show safe error descriptions and offer retry below the attempt cap.
 - New ready sources are selected automatically once; deselecting a source is
@@ -23,8 +25,11 @@ quality badges or simulated model responses.
 
 ## Current limitations
 
-Chat history is component-local and is intentionally reset on notebook change,
-logout and refresh. Source selection is also not persisted across those events.
+Chat history is now stored server-side and restored after notebook changes and
+refresh. Source selection is not persisted across those events. Each question is
+answered independently from its selected sources: archived messages are not sent
+as additional model context. See [HISTORY.md](HISTORY.md) for the storage and API
+contract, deletion semantics and concurrent-request limitations.
 The original PDF is not rendered; citation reading shows extracted chunks and
 highlights the matching chunk, not the exact on-page bounding box. Chunks can
 overlap. Sample question suggestions are explicitly tied to the optional authored
@@ -83,8 +88,11 @@ npm run test:e2e
 
 Two projects exercise 1440×1000 desktop and 390×844 mobile layouts. Each creates
 an account, creates a notebook, adds the authored text source, asks a question,
-opens an authenticated reference, reloads the session, uploads the small authored
-PDF fixture, waits for actual worker extraction, then asks a PDF-backed question.
+opens an authenticated reference, restores chat after reloading the session,
+switches between notebooks without mixing their histories, uploads the small
+authored PDF fixture, waits for actual worker extraction, then asks a PDF-backed
+question. It also cancels and confirms history deletion, reloads to check deletion
+and verifies that source files were not removed.
 They also assert no horizontal overflow and no browser runtime errors. These are
 Chromium viewport checks, not Safari/VoiceOver/iOS-device certification.
 
@@ -109,11 +117,11 @@ an English photosynthesis sentence, with no third-party copyrighted content.
 
 ## Verified in this workspace
 
-- 9 frontend component/integration tests.
+- 14 frontend component/hook/integration tests.
 - 2 real-browser end-to-end tests (desktop and mobile).
 - Production build and TypeScript check.
 - npm audit: no known vulnerabilities at the time of verification.
-- Backend suite: 31 tests.
+- Backend suite: 39 tests.
 
 These checks do not establish production readiness or the quality of a live LLM
 provider. The generated-answer provider remains disabled in this preview.

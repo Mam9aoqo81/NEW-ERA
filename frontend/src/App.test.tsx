@@ -21,7 +21,13 @@ function mockApi({
   sources = [source],
   notebooks = [nb],
   expired = false,
-}: { sources?: unknown[]; notebooks?: (typeof nb)[]; expired?: boolean } = {}) {
+  history = [],
+}: {
+  history?: unknown[];
+  sources?: unknown[];
+  notebooks?: (typeof nb)[];
+  expired?: boolean;
+} = {}) {
   const calls: { path: string; init: RequestInit }[] = [];
   const mock = vi.fn(
     async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -43,6 +49,13 @@ function mockApi({
           201,
         );
       if (path === "/v1/notebooks") return respond(notebooks);
+      if (path.includes("/history")) {
+        if (init.method === "DELETE") {
+          history.splice(0);
+          return respond(null, 204);
+        }
+        return respond({ turns: history, next_before: null });
+      }
       if (path.endsWith("/sources/text")) {
         sources.push(source);
         return respond(source, 201);
@@ -176,6 +189,7 @@ describe("KnowLM study flow", () => {
       question: "البناء الضوئي",
       source_ids: ["source-1"],
       mode: "extractive",
+      request_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
     await user.click(cite);
     expect(

@@ -60,7 +60,31 @@ test("real account → notebook → source → cited question → PDF job", asyn
   await expect(
     page.getByRole("heading", { level: 1, name: "رحلة إلى عالم الأحياء" }),
   ).toBeVisible();
-  await expect(page.locator(".turn")).toHaveCount(0); // Chat is deliberately session-only for now.
+  await expect(page.locator(".turn")).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: /1.*البناء الضوئي · مصدر تجريبي.*ص 1/ }),
+  ).toBeVisible();
+  // Switching to another notebook must not mix histories.
+  if (info.project.name === "mobile")
+    await page
+      .getByRole("button", { name: "فتح القائمة", exact: true })
+      .click();
+  await page.getByRole("button", { name: "دفتر جديد", exact: true }).click();
+  await page.getByLabel("اسم الدفتر").fill("دفتر منفصل");
+  await page.getByRole("button", { name: "إنشاء الدفتر", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "دفتر منفصل" }),
+  ).toBeVisible();
+  await expect(page.locator(".turn")).toHaveCount(0);
+  if (info.project.name === "mobile")
+    await page
+      .getByRole("button", { name: "فتح القائمة", exact: true })
+      .click();
+  await page
+    .locator(".notebook-nav")
+    .filter({ hasText: "رحلة إلى عالم الأحياء" })
+    .click();
+  await expect(page.locator(".turn")).toHaveCount(1);
   await page.getByRole("button", { name: "إضافة مصدر", exact: true }).click();
   await page
     .getByLabel("ملف PDF")
@@ -79,5 +103,23 @@ test("real account → notebook → source → cited question → PDF job", asyn
   await expect(
     page.getByRole("button", { name: /biology.pdf.*ص 1/ }),
   ).toBeVisible();
+  // Clear is explicit, irreversible, and does not remove the underlying sources.
+  await page.getByRole("button", { name: "مسح المحادثة", exact: true }).click();
+  await page.getByRole("button", { name: "إلغاء", exact: true }).click();
+  await expect(page.locator(".turn")).toHaveCount(2);
+  await page.getByRole("button", { name: "مسح المحادثة", exact: true }).click();
+  await page
+    .getByRole("button", { name: "مسح السجل نهائيًا", exact: true })
+    .click();
+  await expect(page.locator(".turn")).toHaveCount(0);
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "رحلة إلى عالم الأحياء" }),
+  ).toBeVisible();
+  await expect(page.locator(".turn")).toHaveCount(0);
+  if (info.project.name === "mobile") await sourcesTab.click();
+  await expect(
+    page.getByRole("checkbox", { name: /biology.pdf/ }),
+  ).toBeEnabled();
   expect(errors).toEqual([]);
 });

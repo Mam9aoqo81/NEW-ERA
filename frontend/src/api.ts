@@ -29,6 +29,8 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Request ID was already used for a different question":
+    "تعارض في معرّف الطلب. اكتب السؤال كطلب جديد.",
   "Invalid credentials": "اسم المستخدم أو كلمة المرور غير صحيحة.",
   "Username unavailable": "اسم المستخدم مستخدم بالفعل. جرّب اسمًا آخر.",
   "Authentication required": "سجّل الدخول للمتابعة.",

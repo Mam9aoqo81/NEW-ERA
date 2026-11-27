@@ -1,3 +1,4 @@
+import { useNotebookChat } from "./useNotebookChat";
 import {
   useCallback,
   useEffect,
@@ -30,12 +31,13 @@ import {
   X,
   PanelRightOpen,
   RotateCcw,
+  Trash2,
+  Clock3,
 } from "lucide-react";
 import {
   api,
   json,
   jobError,
-  type Answer,
   type Citation,
   type Notebook,
   type Page,
@@ -363,6 +365,7 @@ export default function App() {
     setNotebooks((old) => [...old, n]);
     setSelected(n);
     setCreate(false);
+    setMobileNav(false);
   }
   if (checking)
     return (
@@ -623,7 +626,6 @@ function CreateNotebook({
   );
 }
 
-type Turn = { id: number; question: string; answer?: Answer; error?: string };
 function Workspace({
   notebook,
   token,
@@ -638,9 +640,8 @@ function Workspace({
     [loaded, setLoaded] = useState(false),
     [sourceError, setSourceError] = useState(""),
     [add, setAdd] = useState(false),
-    [busy, setBusy] = useState(false),
     [question, setQuestion] = useState(""),
-    [turns, setTurns] = useState<Turn[]>([]),
+    [confirmClear, setConfirmClear] = useState(false),
     [mode, setMode] = useState<"extractive" | "grounded">("extractive"),
     [citation, setCitation] = useState<Citation | null>(null),
     [tab, setTab] = useState<"chat" | "sources">("chat"),
@@ -648,7 +649,9 @@ function Workspace({
   const seen = useRef(new Set<string>()),
     refreshVersion = useRef(0),
     end = useRef<HTMLDivElement>(null),
-    busyRef = useRef(false);
+    chatScroll = useRef<HTMLDivElement>(null);
+  const chat = useNotebookChat(notebook.id, token);
+  const { turns, busy } = chat;
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
       const version = ++refreshVersion.current;
@@ -694,33 +697,23 @@ function Workspace({
     };
   }, [refresh]);
   useEffect(() => {
-    if (turns.length)
-      end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [turns]);
+    end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [chat.scrollRequest]);
   async function ask(e?: FormEvent, suggested?: string) {
     e?.preventDefault();
     const q = (suggested || question).trim();
-    if (!q || !selected.length || busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
+    if (!q || !selected.length || busy || !chat.loaded || chat.loading) return;
     setQuestion("");
-    const id = Date.now();
-    setTurns((old) => [...old, { id, question: q }]);
-    try {
-      const answer = await api<Answer>(
-        `/v1/notebooks/${notebook.id}/ask`,
-        token,
-        json({ question: q, source_ids: selected, mode }),
-      );
-      setTurns((old) => old.map((t) => (t.id === id ? { ...t, answer } : t)));
-    } catch (e) {
-      setTurns((old) =>
-        old.map((t) => (t.id === id ? { ...t, error: errorMessage(e) } : t)),
-      );
-    } finally {
-      setBusy(false);
-      busyRef.current = false;
-    }
+    await chat.send(q, selected, mode);
+  }
+  async function olderMessages() {
+    const el = chatScroll.current;
+    const height = el?.scrollHeight || 0;
+    const top = el?.scrollTop || 0;
+    await chat.loadOlder();
+    requestAnimationFrame(() => {
+      if (el) el.scrollTop = top + el.scrollHeight - height;
+    });
   }
   async function sample() {
     setSampleBusy(true);
@@ -956,10 +949,53 @@ function Workspace({
             <h2>
               <Sparkles size={18} /> اسأل وافهم
             </h2>
-            <span className="quiet-badge">من مصادرك فقط</span>
+            <div className="chat-actions">
+              <span className="quiet-badge">سجل خاص محفوظ</span>
+              <button
+                className="icon-button"
+                aria-label="مسح المحادثة"
+                disabled={!turns.length || busy || chat.loading}
+                onClick={() => setConfirmClear(true)}
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
           </div>
-          <div className="chat-scroll" aria-live="polite">
-            {turns.length === 0 ? (
+          <div
+            className="chat-scroll"
+            ref={chatScroll}
+            aria-live="polite"
+            aria-busy={chat.loading}
+          >
+            {chat.error && (
+              <div className="error" role="alert">
+                {chat.error}
+                {!chat.loaded && (
+                  <button
+                    className="history-retry"
+                    onClick={() => void chat.reload()}
+                  >
+                    إعادة تحميل السجل
+                  </button>
+                )}
+              </div>
+            )}
+            {!chat.loaded && chat.loading && (
+              <div className="loading-line">
+                <Busy /> نستعيد محادثتك…
+              </div>
+            )}
+            {chat.before && (
+              <button
+                className="load-history"
+                disabled={chat.loading || busy}
+                onClick={() => void olderMessages()}
+              >
+                {chat.loading ? <Busy /> : <Clock3 size={14} />} تحميل رسائل
+                أقدم
+              </button>
+            )}
+            {chat.loaded && turns.length === 0 ? (
               <div className="chat-empty">
                 <div className="spark-art">
                   <Sparkles size={35} strokeWidth={1.3} />
@@ -976,7 +1012,7 @@ function Workspace({
                 </p>
                 <div className="suggestions">
                   <button
-                    disabled={!selected.length}
+                    disabled={!selected.length || !chat.loaded || chat.loading}
                     onClick={() =>
                       void ask(undefined, "ما هي عملية البناء الضوئي؟")
                     }
@@ -987,7 +1023,7 @@ function Workspace({
                     <ArrowUpLeft size={16} />
                   </button>
                   <button
-                    disabled={!selected.length}
+                    disabled={!selected.length || !chat.loaded || chat.loading}
                     onClick={() => void ask(undefined, "ما وظيفة الكلوروفيل؟")}
                   >
                     <span>
@@ -1014,14 +1050,31 @@ function Workspace({
                       </span>
                       <strong>KnowLM</strong>
                       <span>
-                        {turn.answer?.mode === "grounded"
+                        {turn.mode === "grounded"
                           ? "إجابة مولّدة"
                           : "بحث في المصادر"}
                       </span>
+                      {turn.saved && (
+                        <span
+                          className="saved-message"
+                          title="محفوظة على الخادم"
+                        >
+                          <Check size={12} /> محفوظة
+                        </span>
+                      )}
                     </div>
                     {turn.error ? (
                       <div className="error" role="alert">
                         {turn.error}
+                        {turn.payload && (
+                          <button
+                            className="history-retry"
+                            disabled={busy || chat.loading}
+                            onClick={() => void chat.retry(turn.id)}
+                          >
+                            إعادة إرسال بنفس المصادر
+                          </button>
+                        )}
                       </div>
                     ) : !turn.answer ? (
                       <div className="loading-line">
@@ -1097,7 +1150,7 @@ function Workspace({
                 onChange={(e) => setQuestion(e.target.value)}
                 maxLength={2000}
                 rows={2}
-                disabled={!selected.length}
+                disabled={!selected.length || !chat.loaded || chat.loading}
                 onKeyDown={(e) => {
                   if (
                     e.key === "Enter" &&
@@ -1116,19 +1169,61 @@ function Workspace({
                 <button
                   className="send-button"
                   aria-label="إرسال السؤال"
-                  disabled={!selected.length || !question.trim() || busy}
+                  disabled={
+                    !selected.length ||
+                    !question.trim() ||
+                    busy ||
+                    !chat.loaded ||
+                    chat.loading
+                  }
                 >
                   {busy ? <Busy /> : <ArrowLeft size={19} />}
                 </button>
               </div>
             </form>
             <p className="composer-disclaimer">
-              راجع المصدر دائمًا؛ الاستشهاد لا يضمن صحة الاستنتاج. المحادثة مؤقتة
-              ولا تُحفظ عند مغادرة الدفتر.
+              محادثتك محفوظة في هذا الدفتر. راجع المصدر دائمًا؛ الاستشهاد لا يضمن
+              صحة الاستنتاج.
             </p>
           </div>
         </section>
       </div>
+      {confirmClear && (
+        <Modal
+          title="مسح محادثة الدفتر؟"
+          close={() => {
+            if (!busy) setConfirmClear(false);
+          }}
+        >
+          <p className="muted">
+            سيُحذف سجل الأسئلة والإجابات والاستشهادات المحفوظ من هذا الدفتر. لن
+            تُحذف مصادرك. لا يمكن التراجع عن هذا الإجراء.
+          </p>
+          <div className="confirm-actions">
+            <button
+              className="outline"
+              disabled={busy}
+              onClick={() => setConfirmClear(false)}
+            >
+              إلغاء
+            </button>
+            <button
+              className="danger"
+              disabled={busy}
+              onClick={async () => {
+                if (await chat.clear()) setConfirmClear(false);
+              }}
+            >
+              {busy ? <Busy /> : <Trash2 size={16} />} مسح السجل نهائيًا
+            </button>
+          </div>
+          {chat.error && (
+            <p className="error" role="alert">
+              {chat.error}
+            </p>
+          )}
+        </Modal>
+      )}
       {add && (
         <AddSource
           token={token}
