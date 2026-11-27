@@ -1,3 +1,4 @@
+import { citationLabel, isTimed, safeVideoLink } from "./citations";
 import { useNotebookChat } from "./useNotebookChat";
 import {
   useCallback,
@@ -33,6 +34,8 @@ import {
   RotateCcw,
   Trash2,
   Clock3,
+  Youtube,
+  ExternalLink,
 } from "lucide-react";
 import {
   api,
@@ -830,7 +833,7 @@ function Workspace({
                 </span>
                 <h3>كل فهم يبدأ بمصدر</h3>
                 <p>
-                  أضف محاضرة أو ملاحظاتك،
+                  أضف محاضرة أو فيديو YouTube،
                   <br />
                   ودع الأسئلة تقودك.
                 </p>
@@ -878,12 +881,21 @@ function Workspace({
                       <span
                         className={`file-icon ${s.kind === "pdf" ? "pdf" : ""}`}
                       >
-                        <FileText size={19} />
+                        {s.kind === "youtube" ? (
+                          <Youtube size={19} />
+                        ) : (
+                          <FileText size={19} />
+                        )}
                       </span>
                       <span className="source-info">
                         <strong dir="auto">{s.title}</strong>
                         <small>
-                          {s.kind === "pdf" ? "PDF" : "نص"} <span>·</span>{" "}
+                          {s.kind === "pdf"
+                            ? "PDF"
+                            : s.kind === "youtube"
+                              ? "YouTube"
+                              : "نص"}{" "}
+                          <span>·</span>{" "}
                           {s.status === "ready"
                             ? "جاهز للدراسة"
                             : s.status === "failed"
@@ -892,6 +904,13 @@ function Workspace({
                         </small>
                       </span>
                     </label>
+                    {s.kind === "youtube" && (
+                      <p className="transcript-provenance">
+                        {s.transcript_origin === "user_captions"
+                          ? "نص مرفق يدويًا · غير مطابق آليًا للفيديو"
+                          : "يعتمد على النص المتاح للفيديو"}
+                      </p>
+                    )}
                     {s.status === "processing" && (
                       <div className="processing">
                         <Busy /> بانتظار العامل أو قيد المعالجة
@@ -916,7 +935,7 @@ function Workspace({
                 <Upload size={20} />
               </span>
               <strong>أضف مساحة جديدة للمعرفة</strong>
-              <small>PDF أو نصوصك الخاصة</small>
+              <small>PDF أو YouTube أو نصوصك</small>
               <b>
                 <Plus size={14} /> إضافة مصدر
               </b>
@@ -1101,7 +1120,9 @@ function Workspace({
                                 <span>{i + 1}</span>
                                 <FileText size={13} />
                                 <b>{c.title}</b>
-                                <small>ص {c.page}</small>
+                                <small dir={isTimed(c) ? "ltr" : undefined}>
+                                  {citationLabel(c)}
+                                </small>
                                 <ArrowUpLeft size={13} />
                               </button>
                             ))}
@@ -1257,18 +1278,51 @@ function AddSource({
   close: () => void;
   done: () => void;
 }) {
-  const [type, setType] = useState<"pdf" | "text">("pdf"),
+  const [type, setType] = useState<"pdf" | "text" | "youtube">("pdf"),
+    [videoUrl, setVideoUrl] = useState(""),
+    [manualCaptions, setManualCaptions] = useState(false),
+    [youtubeAuto, setYoutubeAuto] = useState<boolean | null>(null),
     [title, setTitle] = useState(""),
     [text, setText] = useState(""),
     [file, setFile] = useState<File | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    api<{ youtube_auto_fetch_enabled?: boolean }>("/health")
+      .then((h) => {
+        if (active) {
+          const enabled = h.youtube_auto_fetch_enabled !== false;
+          setYoutubeAuto(enabled);
+          if (!enabled) setManualCaptions(true);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setYoutubeAuto(false);
+          setManualCaptions(true);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
-      if (type === "text") {
+      if (type === "youtube") {
+        await api(
+          `/v1/notebooks/${notebookId}/sources/youtube-jobs`,
+          token,
+          json({
+            url: videoUrl.trim(),
+            title: title.trim() || undefined,
+            captions: manualCaptions ? text : undefined,
+          }),
+        );
+      } else if (type === "text") {
         await api(
           `/v1/notebooks/${notebookId}/sources/text`,
           token,
@@ -1308,6 +1362,12 @@ function AddSource({
         >
           <MessageSquare size={16} /> نص مكتوب
         </button>
+        <button
+          className={type === "youtube" ? "active" : ""}
+          onClick={() => setType("youtube")}
+        >
+          <Youtube size={16} /> YouTube
+        </button>
       </div>
       <form onSubmit={submit}>
         {type === "pdf" ? (
@@ -1328,6 +1388,92 @@ function AddSource({
               تتم المعالجة في الخلفية. الملفات المصوّرة والمحمية غير مدعومة
               حاليًا.
             </p>
+          </>
+        ) : type === "youtube" ? (
+          <>
+            <label>
+              رابط فيديو YouTube
+              <input
+                autoFocus
+                type="url"
+                dir="ltr"
+                value={videoUrl}
+                onChange={(e) => setVideoUrl(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=…"
+                required
+                maxLength={2048}
+              />
+            </label>
+            <label>
+              عنوان الفيديو (اختياري)
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                maxLength={200}
+                placeholder="مثلًا: محاضرة البناء الضوئي"
+              />
+            </label>
+            <p className="field-hint">
+              ندعم روابط الفيديو العادية وyoutu.be وShorts. نبحث في النص المصاحب
+              فقط، لا في صور الفيديو. الاستيراد التلقائي يتصل بـYouTube وقد
+              يتعذّر بسبب قيود المنصة.
+            </p>
+            {youtubeAuto === false && (
+              <p className="external-warning">
+                الاستيراد التلقائي غير متاح في هذه البيئة. أرفق نصًا موقّتًا
+                للفيديو بصيغة SRT أو VTT.
+              </p>
+            )}
+            <label className="manual-caption-toggle">
+              <input
+                type="checkbox"
+                checked={manualCaptions}
+                disabled={youtubeAuto === false}
+                onChange={(e) => setManualCaptions(e.target.checked)}
+              />{" "}
+              لدي ترجمة موقّتة SRT أو VTT
+            </label>
+            {manualCaptions && (
+              <>
+                <label className="caption-file">
+                  استيراد ملف ترجمة (اختياري)
+                  <input
+                    type="file"
+                    accept=".srt,.vtt,text/vtt,text/plain"
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      try {
+                        if (f.size > 2 * 1024 * 1024)
+                          throw new Error("ملف الترجمة أكبر من 2 ميجابايت.");
+                        setText(await f.text());
+                        setError("");
+                      } catch (e) {
+                        setError(errorMessage(e));
+                      }
+                    }}
+                  />
+                </label>
+                <label>
+                  نص الترجمة الموقّت
+                  <textarea
+                    dir="auto"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    rows={6}
+                    maxLength={500000}
+                    required
+                    placeholder={
+                      "WEBVTT\n\n00:00:15.000 --> 00:00:22.000\nنص المقطع هنا…"
+                    }
+                  />
+                </label>
+                <p className="field-hint">
+                  أرفق نصًا تملكه أو لديك حق استخدامه. سيُوسم بأنه مضاف يدويًا؛ لا
+                  نتحقق من مطابقته للفيديو.
+                </p>
+              </>
+            )}
           </>
         ) : (
           <>
@@ -1363,7 +1509,12 @@ function AddSource({
         <button
           className="primary wide"
           disabled={
-            busy || (type === "text" && (!text.trim() || !title.trim()))
+            busy ||
+            (type === "text" && (!text.trim() || !title.trim())) ||
+            (type === "youtube" &&
+              (!videoUrl.trim() ||
+                (manualCaptions && !text.trim()) ||
+                (!manualCaptions && youtubeAuto !== true)))
           }
         >
           {busy ? <Busy /> : <Plus size={17} />}{" "}
@@ -1401,12 +1552,39 @@ function CitationViewer({
         </span>
         <div>
           <strong>{citation.title}</strong>
-          <small>الصفحة {citation.page} · نص مستخرج</small>
+          <small>
+            {isTimed(citation) ? (
+              <>
+                توقيت المقطع <bdi dir="ltr">{citationLabel(citation)}</bdi> · نص
+                الفيديو
+              </>
+            ) : (
+              <>الصفحة {citation.page} · نص مستخرج</>
+            )}
+          </small>
         </div>
       </div>
       <p className="field-hint">
-        هذا عرض للمقاطع النصية، وليس للملف الأصلي. قد تتداخل المقاطع.
+        {isTimed(citation)
+          ? "الاستشهاد يشير إلى توقيت المقطع في نص الفيديو، وليس إلى تحليل الصور أو الصوت مباشرة."
+          : "هذا عرض للمقاطع النصية، وليس للملف الأصلي. قد تتداخل المقاطع."}
       </p>
+      {isTimed(citation) && citation.transcript_origin === "user_captions" && (
+        <p className="external-warning">
+          هذا النص مرفق يدويًا، ولم يُتحقق من مطابقته للفيديو.
+        </p>
+      )}
+      {safeVideoLink(citation.media_url) && (
+        <a
+          className="video-link"
+          href={safeVideoLink(citation.media_url)}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Youtube size={18} /> فتح الفيديو عند هذا التوقيت{" "}
+          <ExternalLink size={14} />
+        </a>
+      )}
       {error ? (
         <p className="error" role="alert">
           {error}

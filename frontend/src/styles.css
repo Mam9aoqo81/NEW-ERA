@@ -2377,3 +2377,47 @@ input:disabled {
   padding: 10px 15px;
   font-size: 11px;
 }
+.manual-caption-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  margin: 15px 0 20px;
+}
+.caption-file {
+  padding: 12px;
+  background: #f7f9f2;
+  border: 1px solid #e5ebdb;
+  border-radius: 8px;
+  font-size: 10px !important;
+}
+.caption-file input {
+  display: block;
+  font-size: 10px;
+  max-width: 100%;
+}
+.video-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #8a4a37;
+  background: #fbf1e9;
+  border: 1px solid #efdbcd;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 11px;
+  text-decoration: none;
+  margin: 15px 0;
+}
+.transcript-provenance {
+  color: #9d8a69;
+  font-size: 8px;
+  margin-top: 8px;
+  line-height: 1.9;
+}
+.modal .external-warning {
+  font-size: 11px;
+  line-height: 2;
+  padding: 10px;
+}

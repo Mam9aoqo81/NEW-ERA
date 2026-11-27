@@ -33,8 +33,15 @@ def test_existing_notebooks_and_sources_survive_history_migration(tmp_path, monk
     with TestClient(app) as c:
         headers = auth(c, 'student')
         nid = notebook(c, headers)
-        sid = c.post(f'/v1/notebooks/{nid}/sources/text', headers=headers,
-                     json={'title': 'كتاب', 'text': 'البناء الضوئي داخل البلاستيدات الخضراء.'}).json()['id']
+        # Seed the historical schema directly, without today's expanded ORM model.
+        from sqlalchemy import text
+        import uuid
+        sid = str(uuid.uuid4())
+        with app.state.engine.begin() as connection:
+            connection.execute(text('INSERT INTO sources (id, notebook_id, title, kind, status, content_hash) VALUES (:id, :nid, :title, :kind, :status, :hash)'),
+                               {'id': sid, 'nid': nid, 'title': 'كتاب', 'kind': 'text', 'status': 'ready', 'hash': 'a'*64})
+            connection.execute(text('INSERT INTO source_chunks (id, source_id, page, chunk_index, text) VALUES (:id, :sid, 1, 0, :text)'),
+                               {'id': str(uuid.uuid4()), 'sid': sid, 'text': 'البناء الضوئي داخل البلاستيدات الخضراء.'})
         command.upgrade(config, 'head')
         assert c.get(f'/v1/notebooks/{nid}/sources', headers=headers).json()[0]['id'] == sid
         assert c.get(f'/v1/notebooks/{nid}/history', headers=headers).json()['turns'] == []

@@ -18,7 +18,7 @@ from knowlm.generation import CitationError, ProviderError, validate_answer
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, LargeBinary, JSON, UniqueConstraint, Index, create_engine, select, update, delete
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float, LargeBinary, JSON, UniqueConstraint, Index, create_engine, select, update, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -60,6 +60,8 @@ class Source(Base):
     kind: Mapped[str] = mapped_column(String(10))
     status: Mapped[str] = mapped_column(String(20), default='ready')
     content_hash: Mapped[str] = mapped_column(String(64))
+    external_url: Mapped[str | None] = mapped_column(String(512))
+    transcript_origin: Mapped[str | None] = mapped_column(String(30))
 
 
 class Chunk(Base):
@@ -69,6 +71,8 @@ class Chunk(Base):
     page: Mapped[int] = mapped_column(Integer)
     chunk_index: Mapped[int] = mapped_column(Integer)
     text: Mapped[str] = mapped_column(Text)
+    start_seconds: Mapped[float | None] = mapped_column(Float)
+    end_seconds: Mapped[float | None] = mapped_column(Float)
 
 
 class IngestionJob(Base):
@@ -122,6 +126,12 @@ class Question(BaseModel):
     mode: Literal["extractive", "grounded"] = "extractive"
 
 
+class YouTubeInput(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    title: str | None = Field(default=None, min_length=1, max_length=200, pattern=r'\S')
+    captions: str | None = Field(default=None, min_length=1, max_length=500_000, pattern=r'\S')
+
+
 def password_hash(password, salt=None):
     salt = salt or secrets.token_hex(16)
     digest = hashlib.scrypt(password.encode(), salt=salt.encode(), n=16384, r=8, p=1).hex()
@@ -137,7 +147,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.5.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.6.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     bearer = HTTPBearer(auto_error=False)
 
@@ -179,7 +189,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'retrieval_mode': 'bm25_char_rrf', 'llm_configured': answer_provider is not None}
+        return {'status': 'ok', 'retrieval_mode': 'bm25_char_rrf', 'llm_configured': answer_provider is not None,
+                'youtube_auto_fetch_enabled': os.getenv('KNOWLM_YOUTUBE_FETCH_ENABLED', '1') == '1'}
 
     @app.post('/v1/auth/register', status_code=201)
     def register(body: Credentials, session: Session = Depends(db)):
@@ -276,6 +287,34 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         return {'id': job.id, 'source_id': source.id, 'status': job.status,
                 'status_url': f'/v1/jobs/{job.id}'}
 
+    @app.post('/v1/notebooks/{notebook_id}/sources/youtube-jobs', status_code=202)
+    def enqueue_youtube(notebook_id: str, body: YouTubeInput, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        from knowlm.youtube import canonical_video, parse_captions
+        from knowlm.pdf import ExtractionError
+        try:
+            video_id, canonical = canonical_video(body.url)
+        except ValueError:
+            raise HTTPException(422, 'Invalid YouTube video URL')
+        if body.captions is None and os.getenv('KNOWLM_YOUTUBE_FETCH_ENABLED', '1') != '1':
+            raise HTTPException(503, 'Automatic YouTube captions are disabled on this server')
+        if body.captions is not None:
+            try:
+                parse_captions(body.captions)
+            except ExtractionError:
+                raise HTTPException(422, 'Expected valid timed SRT or WebVTT captions')
+        payload = json.dumps({'video_id': video_id, 'captions': body.captions}, ensure_ascii=False).encode()
+        source = Source(notebook_id=notebook_id, title=body.title or f'YouTube · {video_id}',
+                        kind='youtube', status='processing', content_hash=hashlib.sha256(payload).hexdigest(),
+                        external_url=canonical, transcript_origin='user_captions' if body.captions is not None else 'youtube_captions')
+        session.add(source)
+        session.flush()
+        job = IngestionJob(source_id=source.id, payload=payload)
+        session.add(job)
+        session.commit()
+        return {'id': job.id, 'source_id': source.id, 'status': job.status,
+                'status_url': f'/v1/jobs/{job.id}'}
+
     def owned_job(job_id, user_id, session):
         job = session.get(IngestionJob, job_id)
         if not job:
@@ -310,6 +349,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         rows = session.execute(select(Source, IngestionJob).outerjoin(
             IngestionJob, IngestionJob.source_id == Source.id).where(Source.notebook_id == notebook_id))
         return [{'id': s.id, 'title': s.title, 'kind': s.kind, 'status': s.status,
+                 'external_url': s.external_url, 'transcript_origin': s.transcript_origin,
                  'job': {'id': job.id, 'attempts': job.attempts, 'error_code': job.error_code} if job else None}
                 for s, job in rows]
 
@@ -323,6 +363,18 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         if not chunks:
             raise HTTPException(404, 'Page text not found')
         return {'source_id': source_id, 'page': page, 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
+
+    @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/chunks/{chunk_id}')
+    def read_chunk(notebook_id: str, source_id: str, chunk_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        source = session.get(Source, source_id)
+        chunk = session.get(Chunk, chunk_id)
+        if not source or source.notebook_id != notebook_id or not chunk or chunk.source_id != source_id:
+            raise HTTPException(404, 'Source not found')
+        return {'source_id': source_id, 'page': None if chunk.start_seconds is not None else chunk.page,
+                'chunks': [{'id': chunk.id, 'text': chunk.text}],
+                'start_seconds': chunk.start_seconds, 'end_seconds': chunk.end_seconds,
+                'transcript_origin': source.transcript_origin}
 
     def turn_snapshot(turn):
         return {'id': turn.id, 'request_id': turn.request_id, 'question': turn.question,
@@ -390,14 +442,19 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             if not set(body.source_ids) <= allowed:
                 raise HTTPException(404, 'Source not found')
             query = query.where(Source.id.in_(body.source_ids))
-        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text) for c, s in session.execute(query)]
+        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text, c.start_seconds, c.end_seconds, s.external_url, s.transcript_origin) for c, s in session.execute(query)]
         hits = retrieve(body.question, candidates)
         evidence = [hit.evidence for hit in hits]
 
         def citation(item, quote):
+            timestamped = item.start_seconds is not None and item.external_url is not None
             return {'chunk_id': item.chunk_id, 'source_id': item.source_id,
-                    'title': item.title, 'page': item.page, 'quote': quote,
-                    'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
+                    'title': item.title, 'page': None if timestamped else item.page, 'quote': quote,
+                    'locator_type': 'timestamp' if timestamped else 'page',
+                    'start_seconds': item.start_seconds, 'end_seconds': item.end_seconds,
+                    'media_url': f'{item.external_url}&t={int(item.start_seconds)}s' if timestamped else None,
+                    'transcript_origin': item.transcript_origin,
+                    'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/chunks/{item.chunk_id}' if timestamped else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
 
         if body.mode == 'grounded' and answer_provider is None:
             raise HTTPException(503, 'Generated mode is not configured; use extractive mode')

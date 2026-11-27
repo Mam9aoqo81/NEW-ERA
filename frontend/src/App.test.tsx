@@ -60,7 +60,10 @@ function mockApi({
         sources.push(source);
         return respond(source, 201);
       }
-      if (path.endsWith("/sources/pdf-jobs"))
+      if (
+        path.endsWith("/sources/pdf-jobs") ||
+        path.endsWith("/sources/youtube-jobs")
+      )
         return respond(
           { id: "job-1", source_id: "pdf-1", status: "pending" },
           202,
@@ -245,6 +248,39 @@ describe("KnowLM study flow", () => {
     expect(
       calls.find((c) => c.path.endsWith("/pdf-jobs"))!.init.body,
     ).toBeInstanceOf(FormData);
+  });
+  it("submits a YouTube URL with an explicitly supplied timed caption", async () => {
+    signedIn();
+    const { calls } = mockApi();
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await user.click(await screen.findByRole("button", { name: "إضافة مصدر" }));
+    await user.click(screen.getByRole("button", { name: "YouTube" }));
+    await user.type(
+      screen.getByLabelText("رابط فيديو YouTube"),
+      "https://youtu.be/aB3dE5gH7jK",
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: "لدي ترجمة موقّتة SRT أو VTT" }),
+    );
+    const captions =
+      "WEBVTT\n\n00:00:15.000 --> 00:00:22.000\nنص الفيديو الخاص بي.";
+    fireEvent.change(screen.getByLabelText("نص الترجمة الموقّت"), {
+      target: { value: captions },
+    });
+    await user.click(screen.getByRole("button", { name: "إضافة إلى مصادري" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.path.endsWith("/youtube-jobs"))).toBe(true),
+    );
+    const request = calls.find((c) => c.path.endsWith("/youtube-jobs"))!;
+    expect(JSON.parse(String(request.init.body))).toEqual({
+      url: "https://youtu.be/aB3dE5gH7jK",
+      captions,
+    });
   });
   it("validates oversized files before uploading", async () => {
     signedIn();

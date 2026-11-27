@@ -1,4 +1,4 @@
-"""Durable database-backed PDF worker. Run with python -m knowlm.worker.
+"""Durable database-backed PDF and YouTube-caption worker. Run with python -m knowlm.worker.
 
 Atomic claims and lease tokens fence stale workers from publishing results.
 No external queue is required at this prototype's scale.
@@ -6,6 +6,8 @@ No external queue is required at this prototype's scale.
 import argparse
 from datetime import datetime, timedelta, timezone
 import logging
+import json
+import hashlib
 import os
 import time
 
@@ -14,11 +16,12 @@ from sqlalchemy.orm import Session
 
 from knowlm.main import Chunk, IngestionJob, Source, uid
 from knowlm.pdf import ExtractionError, extract_pdf
+from knowlm.youtube import fetch_transcript, parse_captions, transcript_chunks
 
 logger = logging.getLogger(__name__)
 
 
-def run_once(engine, extractor=extract_pdf):
+def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript):
     now = datetime.now(timezone.utc)
     with Session(engine) as session:
         # A crashed worker's lease can be reclaimed; limit automatic attempts too.
@@ -46,12 +49,19 @@ def run_once(engine, extractor=extract_pdf):
         session.commit()
         if not claimed.rowcount:
             return True
-        payload = session.get(IngestionJob, candidate).payload
-    error, pages = None, []
+        claimed_job = session.get(IngestionJob, candidate)
+        payload = claimed_job.payload
+        kind = session.get(Source, claimed_job.source_id).kind
+    error, pages, timed_chunks = None, [], []
     try:
         if payload is None:
             raise ExtractionError('missing_payload')
-        pages = extractor(payload)
+        if kind == 'youtube':
+            request = json.loads(payload)
+            segments = parse_captions(request['captions']) if request.get('captions') is not None else youtube_extractor(request['video_id'])
+            timed_chunks = transcript_chunks(segments)
+        else:
+            pages = extractor(payload)
     except ExtractionError as exc:
         error = exc.code
     except Exception:
@@ -77,6 +87,10 @@ def run_once(engine, extractor=extract_pdf):
                     part = text[start:start + 1000].strip()
                     if part:
                         session.add(Chunk(source_id=source.id, page=page_number, chunk_index=index, text=part))
+            for index, chunk in enumerate(timed_chunks):
+                session.add(Chunk(source_id=source.id, page=1, chunk_index=index, **chunk))
+            if timed_chunks:
+                source.content_hash = hashlib.sha256(json.dumps(timed_chunks, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             # No raw-file retention after successful extraction in this version.
             job.payload = None
         session.commit()

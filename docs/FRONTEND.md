@@ -1,4 +1,4 @@
-# KnowLM web study workspace (0.5)
+# KnowLM web study workspace (0.6)
 
 ## Scope
 
@@ -11,7 +11,8 @@ quality badges or simulated model responses.
 - Create/select private notebooks.
 - Persist and restore complete question/answer/citation snapshots per notebook,
   with keyset pagination, explicit confirmed deletion and idempotent request retries.
-- Add pasted text or enqueue PDF extraction; poll source states every 3.5 seconds.
+- Add pasted text, enqueue PDF extraction, or ingest a YouTube link with public or explicitly attached timed captions; poll source states every 3.5 seconds.
+- Video citations show time ranges and a safe external timestamp link, not invented pages. See [YOUTUBE.md](YOUTUBE.md); automatic YouTube access is disabled in the current restricted preview.
 - Failed jobs show safe error descriptions and offer retry below the attempt cap.
 - New ready sources are selected automatically once; deselecting a source is
   respected on subsequent refreshes. Questions send explicit selected source IDs.
@@ -86,7 +87,7 @@ From `frontend`, with all three development services running:
 npm run test:e2e
 ```
 
-Two projects exercise 1440×1000 desktop and 390×844 mobile layouts. Each creates
+Two projects exercise 1440×1000 desktop and 390×844 mobile layouts. A second flow imports an authored VTT caption for a syntactically valid test video link, verifies the timestamp citation, manual-provenance warning, and restoration after refresh. It does not contact YouTube or claim that the test video exists. Each creates
 an account, creates a notebook, adds the authored text source, asks a question,
 opens an authenticated reference, restores chat after reloading the session,
 switches between notebooks without mixing their histories, uploads the small
@@ -117,11 +118,11 @@ an English photosynthesis sentence, with no third-party copyrighted content.
 
 ## Verified in this workspace
 
-- 14 frontend component/hook/integration tests.
-- 2 real-browser end-to-end tests (desktop and mobile).
+- 17 frontend component/hook/integration tests.
+- 4 real-browser end-to-end tests (study/PDF and YouTube manual-caption flows, desktop and mobile).
 - Production build and TypeScript check.
 - npm audit: no known vulnerabilities at the time of verification.
-- Backend suite: 39 tests.
+- Backend suite: 81 passed; one opt-in live YouTube test skipped (network restricted).
 
 These checks do not establish production readiness or the quality of a live LLM
 provider. The generated-answer provider remains disabled in this preview.

@@ -3,6 +3,8 @@ export type Source = {
   id: string;
   title: string;
   kind: string;
+  external_url?: string | null;
+  transcript_origin?: string | null;
   status: string;
   job?: { id: string; attempts: number; error_code: string | null } | null;
 };
@@ -10,8 +12,13 @@ export type Citation = {
   chunk_id: string;
   source_id: string;
   title: string;
-  page: number;
+  page: number | null;
   quote: string;
+  locator_type?: "page" | "timestamp";
+  start_seconds?: number | null;
+  end_seconds?: number | null;
+  media_url?: string | null;
+  transcript_origin?: "youtube_captions" | "user_captions" | null;
   url: string;
 };
 export type Answer = {
@@ -23,12 +30,18 @@ export type Answer = {
 };
 export type Page = {
   source_id: string;
-  page: number;
+  page: number | null;
   chunks: { id: string; text: string }[];
 };
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Invalid YouTube video URL":
+    "أدخل رابط فيديو YouTube صالحًا، وليس رابط قناة أو قائمة تشغيل.",
+  "Expected valid timed SRT or WebVTT captions":
+    "النص غير صالح. أضف ترجمة بصيغة SRT أو VTT مع توقيت صحيح لكل مقطع.",
+  "Automatic YouTube captions are disabled on this server":
+    "الاستيراد التلقائي من YouTube غير متاح على هذا الخادم. يمكنك إرفاق ترجمة موقّتة.",
   "Request ID was already used for a different question":
     "تعارض في معرّف الطلب. اكتب السؤال كطلب جديد.",
   "Invalid credentials": "اسم المستخدم أو كلمة المرور غير صحيحة.",
@@ -52,6 +65,23 @@ export function jobError(code: string | null | undefined) {
   return (
     (
       {
+        youtube_network_disabled:
+          "الاستيراد التلقائي غير مفعّل هنا؛ أضف المصدر مجددًا مع نص SRT أو VTT تملكه.",
+        youtube_no_captions:
+          "الفيديو لا يوفّر نصًا متاحًا. أضف رابط الفيديو مع ترجمة موقّتة تملك حق استخدامها.",
+        youtube_unavailable:
+          "الفيديو غير متاح أو خاص أو مقيّد. لا نتجاوز قيود الوصول.",
+        youtube_access_blocked:
+          "YouTube منع الوصول إلى النص من هذا الخادم. أرفق ترجمة موقّتة أو حاول من بيئة مسموحة.",
+        youtube_network_error:
+          "تعذّر الاتصال بـYouTube. تحقق من اتصال الخادم أو أرفق نصًا موقّتًا.",
+        youtube_timeout: "استغرق جلب النص وقتًا أطول من المسموح. حاول مجددًا.",
+        youtube_fetch_failed:
+          "تعذّر استخراج نص الفيديو؛ قد تكون خدمة YouTube قد تغيّرت. يمكنك إرفاق ترجمة موقّتة.",
+        invalid_timed_captions:
+          "توقيت الترجمة غير صالح. استخدم SRT أو VTT صالحًا.",
+        captions_too_large:
+          "الترجمة تتجاوز الحد المسموح: 500 ألف محرف أو 20 ألف مقطع.",
         ocr_required: "الملف مصوّر ويحتاج OCR، وهو غير مدعوم بعد.",
         unreadable_pdf: "تعذّر قراءة الملف. جرّب نسخة PDF أخرى.",
         encrypted_pdf: "الملف محمي بكلمة مرور.",

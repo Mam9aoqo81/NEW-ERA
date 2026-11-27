@@ -123,3 +123,87 @@ test("real account → notebook → source → cited question → PDF job", asyn
   ).toBeEnabled();
   expect(errors).toEqual([]);
 });
+
+test("YouTube link + user-owned timed captions → timestamp citation → history", async ({
+  page,
+}) => {
+  await page.goto("/");
+  const username = `yt_${Date.now()}`;
+  const credentials = { username, password: "development-test-password" };
+  expect(
+    (
+      await page.request.post("/v1/auth/register", { data: credentials })
+    ).status(),
+  ).toBe(201);
+  const { access_token } = await (
+    await page.request.post("/v1/auth/login", { data: credentials })
+  ).json();
+  const notebook = await (
+    await page.request.post("/v1/notebooks", {
+      headers: { Authorization: `Bearer ${access_token}` },
+      data: { title: "دراسة فيديو YouTube" },
+    })
+  ).json();
+  await page.evaluate(
+    (token) => sessionStorage.setItem("knowlm-token", token),
+    access_token,
+  );
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { level: 1, name: notebook.title }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إضافة مصدر", exact: true }).click();
+  await page.getByRole("button", { name: "YouTube", exact: true }).click();
+  await page
+    .getByLabel("رابط فيديو YouTube")
+    .fill("https://youtu.be/aB3dE5gH7jK?si=ignored");
+  await page.getByLabel("عنوان الفيديو (اختياري)").fill("مقطع تعليمي اختباري");
+  const manual = page.getByRole("checkbox", {
+    name: "لدي ترجمة موقّتة SRT أو VTT",
+  });
+  if (!(await manual.isChecked())) await manual.check();
+  const captions =
+    "WEBVTT\n\n00:00:15.000 --> 00:00:29.000\nيساعد الانقسام المتساوي في نمو الأنسجة وتعويض الخلايا التالفة.\n";
+  await page.getByLabel("استيراد ملف ترجمة (اختياري)").setInputFiles({
+    name: "my-captions.vtt",
+    mimeType: "text/vtt",
+    buffer: Buffer.from(captions),
+  });
+  await expect(page.getByLabel("نص الترجمة الموقّت")).toHaveValue(captions);
+  await page.getByRole("button", { name: "إضافة إلى مصادري" }).click();
+  const mobile = page.viewportSize()!.width < 650;
+  if (mobile) await page.getByRole("button", { name: /^المصادر/ }).click();
+  await expect(
+    page.getByRole("checkbox", { name: /مقطع تعليمي اختباري/ }),
+  ).toBeEnabled({ timeout: 20000 });
+  await expect(
+    page.getByText("نص مرفق يدويًا · غير مطابق آليًا للفيديو"),
+  ).toBeVisible();
+  if (mobile)
+    await page.getByRole("button", { name: "اسأل وافهم", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "سؤالك عن المصادر" })
+    .fill("الانقسام المتساوي");
+  await page.getByRole("button", { name: "إرسال السؤال" }).click();
+  const reference = page.getByRole("button", {
+    name: /مقطع تعليمي اختباري.*0:15/,
+  });
+  await reference.click();
+  await expect(
+    page.getByRole("link", { name: "فتح الفيديو عند هذا التوقيت" }),
+  ).toHaveAttribute(
+    "href",
+    "https://www.youtube.com/watch?v=aB3dE5gH7jK&t=15s",
+  );
+  await expect(
+    page.getByText("هذا النص مرفق يدويًا، ولم يُتحقق من مطابقته للفيديو."),
+  ).toBeVisible();
+  await expect(page.locator(".page-text .highlighted")).toContainText(
+    "تعويض الخلايا التالفة",
+  );
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: /مقطع تعليمي اختباري.*0:15/ }),
+  ).toBeVisible();
+});

@@ -39,6 +39,10 @@ class Evidence:
     title: str
     page: int
     text: str
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    external_url: str | None = None
+    transcript_origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,7 +99,7 @@ def retrieve(question, candidates, limit=3):
         duplicate = False
         for hit in selected:
             old = hit.evidence
-            if old.source_id == candidate.source_id and old.page == candidate.page:
+            if old.source_id == candidate.source_id and old.page == candidate.page and old.start_seconds == candidate.start_seconds:
                 a, b = set(words(old.text)), set(words(candidate.text))
                 if len(a & b) / max(len(a | b), 1) >= 0.85:
                     duplicate = True
