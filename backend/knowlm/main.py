@@ -1,0 +1,353 @@
+"""KnowLM's private, source-grounded backend prototype.
+
+Local retrieval is explicitly extractive, not a generative model or vector search.
+"""
+import hashlib
+import hmac
+import os
+from pathlib import Path
+import secrets
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Literal
+
+from knowlm.retrieval import Evidence, retrieve
+from knowlm.generation import CitationError, ProviderError, validate_answer
+
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, LargeBinary, create_engine, select, update
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+
+def uid():
+    return str(uuid.uuid4())
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = 'users'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    username: Mapped[str] = mapped_column(String(40), unique=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+
+
+class AuthSession(Base):
+    __tablename__ = 'auth_sessions'
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Notebook(Base):
+    __tablename__ = 'notebooks'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    owner_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+
+
+class Source(Base):
+    __tablename__ = 'sources'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    notebook_id: Mapped[str] = mapped_column(ForeignKey('notebooks.id'), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(20), default='ready')
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+
+class Chunk(Base):
+    __tablename__ = 'source_chunks'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    source_id: Mapped[str] = mapped_column(ForeignKey('sources.id'), index=True)
+    page: Mapped[int] = mapped_column(Integer)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+
+
+class IngestionJob(Base):
+    __tablename__ = 'ingestion_jobs'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    source_id: Mapped[str] = mapped_column(ForeignKey('sources.id'), unique=True)
+    status: Mapped[str] = mapped_column(String(20), default='pending', index=True)
+    payload: Mapped[bytes | None] = mapped_column(LargeBinary)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(50))
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Credentials(BaseModel):
+    username: str = Field(min_length=3, max_length=40, pattern=r'^[a-zA-Z0-9_]+$')
+    password: str = Field(min_length=10, max_length=128)
+
+
+class NotebookInput(BaseModel):
+    title: str = Field(min_length=1, max_length=200, pattern=r'\S')
+
+
+class TextInput(BaseModel):
+    title: str = Field(min_length=1, max_length=200, pattern=r'\S')
+    text: str = Field(min_length=1, max_length=500_000, pattern=r'\S')
+
+
+class Question(BaseModel):
+    question: str = Field(min_length=1, max_length=2000, pattern=r'\S')
+    source_ids: list[str] | None = Field(default=None, max_length=100)
+    mode: Literal["extractive", "grounded"] = "extractive"
+
+
+def password_hash(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt.encode(), n=16384, r=8, p=1).hex()
+    return f'{salt}:{digest}'
+
+
+def create_app(database_url=None, *, initialize_schema=True, answer_provider=None):
+    data = Path(os.getenv('KNOWLM_DATA_DIR', 'backend/data'))
+    data.mkdir(parents=True, exist_ok=True)
+    url = database_url or os.getenv('DATABASE_URL', f'sqlite:///{data / "knowlm.db"}')
+    engine = create_engine(url, connect_args={'check_same_thread': False} if url.startswith('sqlite') else {})
+    # Prototype only: production must use reviewed database migrations.
+    if initialize_schema:
+        Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    app = FastAPI(title='KnowLM', version='0.4.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app.state.engine = engine
+    bearer = HTTPBearer(auto_error=False)
+
+    def db():
+        with factory() as session:
+            yield session
+
+    def current_user(auth: HTTPAuthorizationCredentials | None = Depends(bearer), session: Session = Depends(db)):
+        if not auth or auth.scheme.lower() != 'bearer':
+            raise HTTPException(401, 'Authentication required')
+        record = session.get(AuthSession, hashlib.sha256(auth.credentials.encode()).hexdigest())
+        if not record or record.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
+            raise HTTPException(401, 'Invalid or expired session')
+        return record.user_id
+
+    def owned(notebook_id, user_id, session):
+        notebook = session.get(Notebook, notebook_id)
+        if not notebook or notebook.owner_id != user_id:
+            raise HTTPException(404, 'Notebook not found')
+        return notebook
+
+    def store_source(notebook_id, title, kind, pages, session):
+        source = Source(notebook_id=notebook_id, title=title, kind=kind,
+                        content_hash=hashlib.sha256('\f'.join(pages).encode()).hexdigest())
+        session.add(source)
+        session.flush()
+        for page, text in enumerate(pages, 1):
+            for index, start in enumerate(range(0, len(text), 900)):
+                part = text[start:start + 1000].strip()
+                if part:
+                    session.add(Chunk(source_id=source.id, page=page, chunk_index=index, text=part))
+        session.commit()
+        return {'id': source.id, 'title': title, 'status': source.status, 'pages': len(pages)}
+
+    @app.get('/', include_in_schema=False)
+    def index():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse('/docs')
+
+    @app.get('/health')
+    def health():
+        return {'status': 'ok', 'retrieval_mode': 'bm25_char_rrf', 'llm_configured': answer_provider is not None}
+
+    @app.post('/v1/auth/register', status_code=201)
+    def register(body: Credentials, session: Session = Depends(db)):
+        name = body.username.lower()
+        if session.scalar(select(User).where(User.username == name)):
+            raise HTTPException(409, 'Username unavailable')
+        user = User(username=name, password_hash=password_hash(body.password))
+        session.add(user)
+        from sqlalchemy.exc import IntegrityError
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(409, 'Username unavailable')
+        return {'id': user.id, 'username': user.username}
+
+    @app.post('/v1/auth/login')
+    def login(body: Credentials, session: Session = Depends(db)):
+        user = session.scalar(select(User).where(User.username == body.username.lower()))
+        stored = user.password_hash if user else password_hash('dummy-password-value')
+        if not hmac.compare_digest(password_hash(body.password, stored.split(':')[0]), stored) or not user:
+            raise HTTPException(401, 'Invalid credentials')
+        token = secrets.token_urlsafe(32)
+        session.add(AuthSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id,
+                                expires_at=datetime.now(timezone.utc) + timedelta(hours=24)))
+        session.commit()
+        return {'access_token': token, 'token_type': 'bearer', 'expires_in': 86400}
+
+    @app.get('/v1/auth/me')
+    def me(user_id=Depends(current_user), session: Session = Depends(db)):
+        user = session.get(User, user_id)
+        return {'id': user.id, 'username': user.username}
+
+    @app.post('/v1/auth/logout', status_code=204)
+    def logout(auth: HTTPAuthorizationCredentials = Depends(bearer), user_id=Depends(current_user), session: Session = Depends(db)):
+        record = session.get(AuthSession, hashlib.sha256(auth.credentials.encode()).hexdigest())
+        session.delete(record)
+        session.commit()
+
+    @app.post('/v1/notebooks', status_code=201)
+    def create_notebook(body: NotebookInput, user_id=Depends(current_user), session: Session = Depends(db)):
+        notebook = Notebook(title=body.title.strip(), owner_id=user_id)
+        session.add(notebook)
+        session.commit()
+        return {'id': notebook.id, 'title': notebook.title}
+
+    @app.get('/v1/notebooks')
+    def list_notebooks(user_id=Depends(current_user), session: Session = Depends(db)):
+        return [{'id': n.id, 'title': n.title} for n in session.scalars(select(Notebook).where(Notebook.owner_id == user_id))]
+
+    @app.post('/v1/notebooks/{notebook_id}/sources/text', status_code=201)
+    def add_text(notebook_id: str, body: TextInput, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        return store_source(notebook_id, body.title, 'text', [body.text], session)
+
+    @app.post('/v1/notebooks/{notebook_id}/sources/pdf', status_code=201)
+    async def add_pdf(notebook_id: str, file: UploadFile = File(...), user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        try:
+            raw = await file.read(10 * 1024 * 1024 + 1)
+        finally:
+            await file.close()
+        if len(raw) > 10 * 1024 * 1024:
+            raise HTTPException(413, 'PDF limit is 10 MiB')
+        if not raw.startswith(b'%PDF-'):
+            raise HTTPException(415, 'Expected a PDF file')
+        # Compatibility endpoint: extraction is isolated; use /pdf-jobs for durable async work.
+        from knowlm.pdf import extract_pdf, ExtractionError
+        try:
+            from starlette.concurrency import run_in_threadpool
+            pages = await run_in_threadpool(extract_pdf, raw)
+        except ExtractionError as exc:
+            raise HTTPException(exc.status_code, exc.code)
+        return store_source(notebook_id, (file.filename or 'Document')[:200], 'pdf', pages, session)
+
+    @app.post('/v1/notebooks/{notebook_id}/sources/pdf-jobs', status_code=202)
+    async def enqueue_pdf(notebook_id: str, file: UploadFile = File(...), user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        try:
+            raw = await file.read(10 * 1024 * 1024 + 1)
+        finally:
+            await file.close()
+        if len(raw) > 10 * 1024 * 1024:
+            raise HTTPException(413, 'PDF limit is 10 MiB')
+        if not raw.startswith(b'%PDF-'):
+            raise HTTPException(415, 'Expected a PDF file')
+        source = Source(notebook_id=notebook_id, title=(file.filename or 'Document')[:200],
+                        kind='pdf', status='processing', content_hash=hashlib.sha256(raw).hexdigest())
+        session.add(source)
+        session.flush()
+        job = IngestionJob(source_id=source.id, payload=raw)
+        session.add(job)
+        session.commit()
+        return {'id': job.id, 'source_id': source.id, 'status': job.status,
+                'status_url': f'/v1/jobs/{job.id}'}
+
+    def owned_job(job_id, user_id, session):
+        job = session.get(IngestionJob, job_id)
+        if not job:
+            raise HTTPException(404, 'Job not found')
+        source = session.get(Source, job.source_id)
+        owned(source.notebook_id, user_id, session)
+        return job
+
+    @app.get('/v1/jobs/{job_id}')
+    def get_job(job_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
+        job = owned_job(job_id, user_id, session)
+        return {'id': job.id, 'source_id': job.source_id, 'status': job.status,
+                'attempts': job.attempts, 'error_code': job.error_code}
+
+    @app.post('/v1/jobs/{job_id}/retry', status_code=202)
+    def retry_job(job_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
+        job = owned_job(job_id, user_id, session)
+        result = session.execute(update(IngestionJob).where(IngestionJob.id == job.id,
+                                 IngestionJob.status == 'failed', IngestionJob.attempts < 3).values(
+                                 status='pending', error_code=None, lease_token=None, lease_until=None))
+        if not result.rowcount:
+            raise HTTPException(409, 'Only failed jobs with fewer than 3 attempts may be retried')
+        source = session.get(Source, job.source_id)
+        source.status = 'processing'
+        session.commit()
+        return {'id': job.id, 'status': 'pending'}
+
+
+    @app.get('/v1/notebooks/{notebook_id}/sources')
+    def list_sources(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        rows = session.execute(select(Source, IngestionJob).outerjoin(
+            IngestionJob, IngestionJob.source_id == Source.id).where(Source.notebook_id == notebook_id))
+        return [{'id': s.id, 'title': s.title, 'kind': s.kind, 'status': s.status,
+                 'job': {'id': job.id, 'attempts': job.attempts, 'error_code': job.error_code} if job else None}
+                for s, job in rows]
+
+    @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/pages/{page}')
+    def get_page(notebook_id: str, source_id: str, page: int, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        source = session.get(Source, source_id)
+        if not source or source.notebook_id != notebook_id:
+            raise HTTPException(404, 'Source not found')
+        chunks = session.scalars(select(Chunk).where(Chunk.source_id == source_id, Chunk.page == page).order_by(Chunk.chunk_index)).all()
+        if not chunks:
+            raise HTTPException(404, 'Page text not found')
+        return {'source_id': source_id, 'page': page, 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
+
+    @app.post('/v1/notebooks/{notebook_id}/ask')
+    def ask(notebook_id: str, body: Question, user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        query = select(Chunk, Source).join(Source, Source.id == Chunk.source_id).where(Source.notebook_id == notebook_id, Source.status == 'ready')
+        if body.source_ids is not None:
+            allowed = set(session.scalars(select(Source.id).where(Source.notebook_id == notebook_id)))
+            if not set(body.source_ids) <= allowed:
+                raise HTTPException(404, 'Source not found')
+            query = query.where(Source.id.in_(body.source_ids))
+        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text) for c, s in session.execute(query)]
+        hits = retrieve(body.question, candidates)
+        evidence = [hit.evidence for hit in hits]
+
+        def citation(item, quote):
+            return {'chunk_id': item.chunk_id, 'source_id': item.source_id,
+                    'title': item.title, 'page': item.page, 'quote': quote,
+                    'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
+
+        if body.mode == 'grounded' and answer_provider is None:
+            raise HTTPException(503, 'Generated mode is not configured; use extractive mode')
+        if body.mode == 'grounded' and evidence:
+            try:
+                generated = validate_answer(answer_provider.generate(body.question, evidence), evidence)
+            except CitationError:
+                raise HTTPException(502, 'Generated answer rejected: invalid citation or structure')
+            except ProviderError:
+                raise HTTPException(503, 'Generation provider unavailable')
+            lookup = {item.chunk_id: item for item in evidence}
+            citations, rendered = [], []
+            for claim in generated.claims:
+                markers = []
+                for reference in claim.references:
+                    citations.append(citation(lookup[reference.chunk_id], reference.quote))
+                    markers.append(f'[{len(citations)}]')
+                rendered.append(claim.text + ' ' + ' '.join(markers))
+            return {'mode': 'grounded', 'answered': bool(rendered),
+                    'answer': '\n\n'.join(rendered) if rendered else 'لا توجد معلومات كافية في المصادر المحددة.',
+                    'citations': citations, 'retrieval': 'bm25_char_rrf',
+                    'notice': 'تم التحقق من وجود الاقتباسات في المصادر؛ هذا لا يضمن صحة كل استنتاج دلاليًا.'}
+        citations = [citation(item, item.text) for item in evidence]
+        return {'mode': body.mode, 'answered': bool(citations),
+                'answer': '\n\n'.join(f'{c["quote"]} [{i}]' for i, c in enumerate(citations, 1)) if citations else 'لا توجد معلومات كافية في المصادر المحددة.',
+                'citations': citations, 'retrieval': 'bm25_char_rrf',
+                'notice': 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'}
+
+    return app
+
