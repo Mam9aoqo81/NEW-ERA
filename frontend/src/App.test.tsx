@@ -22,9 +22,15 @@ function mockApi({
   notebooks = [nb],
   expired = false,
   history = [],
+  semantic = false,
+  ocr = false,
+  notebookRole = "owner",
   deleteFails = false,
   deleteResponseLost = false,
 }: {
+  semantic?: boolean;
+  ocr?: boolean;
+  notebookRole?: "owner" | "viewer" | "editor";
   deleteFails?: boolean;
   deleteResponseLost?: boolean;
   history?: unknown[];
@@ -37,7 +43,11 @@ function mockApi({
     async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const path = String(input);
       calls.push({ path, init });
-      if (path === "/health") return respond({ llm_configured: false });
+      if (path === "/health")
+        return respond({
+          llm_configured: false,
+          semantic_configured: semantic,
+        });
       if (path === "/v1/auth/me")
         return expired
           ? respond({ detail: "Invalid or expired session" }, 401)
@@ -65,7 +75,8 @@ function mockApi({
           { id: "created-1", title: JSON.parse(String(init.body)).title },
           201,
         );
-      if (path === "/v1/notebooks") return respond(notebooks);
+      if (path === "/v1/notebooks")
+        return respond(notebooks.map((n) => ({ ...n, role: notebookRole })));
       if (path.includes("/history")) {
         if (init.method === "DELETE") {
           history.splice(0);
@@ -87,6 +98,7 @@ function mockApi({
           202,
         );
       if (path.endsWith("/sources")) return respond(sources);
+      if (path.endsWith("/decks")) return respond([]);
       if (path.endsWith("/pages/1"))
         return respond({
           source_id: source.id,
@@ -106,6 +118,7 @@ function mockApi({
           notice: "مقتطفات بحث نصي.",
           citations: [
             {
+              ocr,
               chunk_id: "chunk-1",
               source_id: source.id,
               title: source.title,
@@ -166,6 +179,51 @@ describe("KnowLM study flow", () => {
     ).toBeVisible();
     expect(sessionStorage.getItem("knowlm-token")).toBe("test-session");
   });
+  it("requires separate semantic consent and resets it when selected sources change", async () => {
+    signedIn();
+    const { calls } = mockApi({ semantic: true });
+    const user = userEvent.setup();
+    render(<App />);
+    const consent = await screen.findByRole("checkbox", {
+      name: /أوافق على إرسال السؤال وكل مقاطع/,
+    });
+    expect(consent).not.toBeChecked();
+    await user.click(consent);
+    await user.type(
+      screen.getByRole("textbox", { name: "سؤالك عن المصادر" }),
+      "البناء الضوئي",
+    );
+    await user.click(screen.getByRole("button", { name: "إرسال السؤال" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.path.endsWith("/ask"))).toBe(true),
+    );
+    expect(
+      JSON.parse(String(calls.find((c) => c.path.endsWith("/ask"))!.init.body))
+        .semantic_consent,
+    ).toBe(true);
+    await user.click(screen.getByRole("checkbox", { name: /محاضرة النباتات/ }));
+    expect(consent).not.toBeChecked();
+  });
+  it("does not present owner deletion or source editing to a notebook viewer", async () => {
+    signedIn();
+    mockApi({ notebookRole: "viewer", semantic: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { level: 1, name: nb.title });
+    expect(
+      screen.queryByRole("button", { name: /^حذف الدفتر$/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^إضافة مصدر$/ })).toBeDisabled();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: /أوافق على إرسال السؤال وكل مقاطع/,
+      }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^أدوات المراجعة$/ }));
+    expect(
+      await screen.findByRole("button", { name: "مجموعة يدوية" }),
+    ).toBeDisabled();
+  });
   it("creates the first notebook rather than showing fabricated content", async () => {
     signedIn();
     const { calls } = mockApi({ notebooks: [], sources: [] });
@@ -225,6 +283,28 @@ describe("KnowLM study flow", () => {
       "Bearer test-session",
     );
     expect(screen.getByText("إجابة مولّدة · غير مفعّلة")).toBeDisabled();
+  });
+  it("marks OCR sources and warns before relying on a recognized page", async () => {
+    signedIn();
+    mockApi({
+      ocr: true,
+      sources: [{ ...source, kind: "pdf", ocr_pages: [1] }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByText(/OCR محلي · صفحات 1/)).toBeVisible();
+    const input = await screen.findByRole("textbox", {
+      name: "سؤالك عن المصادر",
+    });
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.type(input, "البناء الضوئي");
+    await user.click(screen.getByRole("button", { name: "إرسال السؤال" }));
+    await user.click(
+      await screen.findByRole("button", { name: /محاضرة النباتات.*ص 1/ }),
+    );
+    expect(
+      await screen.findByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
+    ).toBeVisible();
   });
   it("disables questions when all sources are deselected", async () => {
     signedIn();

@@ -1,0 +1,2 @@
+# Optional offline synthetic speech; GPL-3.0-or-later engine/data, review distribution.
+espeakng-loader==0.2.4

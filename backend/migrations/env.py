@@ -3,6 +3,14 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import create_engine, pool
 from knowlm.main import Base
+import knowlm.calls
+import knowlm.pomodoro
+import knowlm.audio
+import knowlm.canvas
+import knowlm.community
+import knowlm.collaboration
+import knowlm.sharing  # register unlisted learning snapshot table
+import knowlm.limits  # register durable request budget tables
 import knowlm.learning  # register learning tables for schema comparison
 
 config = context.config

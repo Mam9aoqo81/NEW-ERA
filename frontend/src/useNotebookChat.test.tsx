@@ -141,3 +141,23 @@ describe("durable notebook chat", () => {
     expect(signal?.aborted).toBe(true);
   });
 });
+
+it("sends semantic consent only when explicit, preserving it on retry", async () => {
+  mock.mockResolvedValueOnce({ turns: [], next_before: null });
+  const { result } = renderHook(() => useNotebookChat("notebook", "token"));
+  await waitFor(() => expect(result.current.loaded).toBe(true));
+  mock.mockRejectedValueOnce(new Error("provider offline"));
+  await act(async () => {
+    await result.current.send("food", ["selected"], "extractive", true);
+  });
+  const payload = JSON.parse(String(mock.mock.calls.at(-1)?.[2]?.body));
+  expect(payload.semantic_consent).toBe(true);
+  expect(payload.source_ids).toEqual(["selected"]);
+  mock.mockResolvedValueOnce(answer);
+  await act(async () => {
+    await result.current.retry(payload.request_id);
+  });
+  expect(JSON.parse(String(mock.mock.calls.at(-1)?.[2]?.body))).toEqual(
+    payload,
+  );
+});

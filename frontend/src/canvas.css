@@ -1,0 +1,42 @@
+.ink-panel {
+  margin: 1rem;
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #d7e4df;
+  border-radius: 16px;
+}
+.ink-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.ink-panel fieldset {
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+  align-items: center;
+}
+.ink-panel svg {
+  width: 100%;
+  aspect-ratio: 5/3;
+  background: #fafcfb;
+  border: 1px solid #a9bdb5;
+  touch-action: none;
+  user-select: none;
+}
+.ink-panel label:has(textarea),
+.ink-panel ul {
+  width: 100%;
+}
+.ink-panel textarea {
+  display: block;
+  width: 100%;
+  min-height: 100px;
+}
+.ink-panel button {
+  padding: 8px 12px;
+  border: 1px solid #c5d7ce;
+  border-radius: 8px;
+  background: #f4f9f7;
+}

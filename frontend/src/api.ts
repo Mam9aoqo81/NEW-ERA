@@ -1,14 +1,20 @@
-export type Notebook = { id: string; title: string };
+export type Notebook = {
+  id: string;
+  title: string;
+  role?: "owner" | "editor" | "viewer";
+};
 export type Source = {
   id: string;
   title: string;
   kind: string;
   external_url?: string | null;
   transcript_origin?: string | null;
+  ocr_pages?: number[];
   status: string;
   job?: { id: string; attempts: number; error_code: string | null } | null;
 };
 export type Citation = {
+  ocr?: boolean;
   chunk_id: string;
   source_id: string;
   title: string;
@@ -23,6 +29,7 @@ export type Citation = {
   url: string;
 };
 export type Answer = {
+  turn_id?: number;
   mode: "extractive" | "grounded";
   answered: boolean;
   answer: string;
@@ -37,6 +44,73 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Unpublish before changing classification":
+    "المنشور موجود بتصنيف مختلف. ألغِ نشره أولًا قبل تغيير التصنيف.",
+  "Public post unavailable":
+    "المنشور غير متاح: قد يكون محذوفًا أو منتهيًا أو محجوبًا لهذا الحساب.",
+  "Public comment unavailable": "التعليق غير متاح أو لا تملك صلاحية حذفه.",
+  "Explicit public publishing consent is required":
+    "راجع النص وأكد موافقتك على نشره واسم حسابك للعامة.",
+  "Invalid curriculum classification":
+    "اختر تصنيفًا صالحًا للدولة والمرحلة والمادة.",
+  "Community quota reached":
+    "وصلت للحد الأقصى لهذه العملية في المجتمع. احذف عناصر قديمة أولًا.",
+  "Cannot follow yourself": "لا يمكنك متابعة حسابك نفسه.",
+  "Cannot block yourself": "لا يمكنك حظر حسابك نفسه.",
+  "Notebook is read only":
+    "صلاحيتك قارئ؛ تعديل الدفتر متاح للمحرر والمالك فقط.",
+  "Invitation unavailable":
+    "الدعوة غير متاحة لهذا الحساب، أو استُخدمت أو أُلغيت أو انتهت. تحقق من مساحة الدراسة إذا سبق قبولها.",
+  "Explicit collaboration consent is required":
+    "راجع حدود مشاركة الدفتر وأكد موافقتك أولًا.",
+  "External processing requires notebook owner":
+    "إرسال مصادر هذا الدفتر لمزوّد خارجي متاح لمالك الدفتر فقط.",
+  "Invitation quota reached":
+    "وصل الدفتر إلى حد 20 دعوة معلقة. ألغِ دعوات قديمة أولًا.",
+  "Membership quota reached": "وصل الدفتر أو الحساب إلى حد 20 عضوية.",
+  "Room message quota reached":
+    "وصلت الغرفة إلى حد 1000 رسالة. احذف رسائل قديمة أولًا.",
+  "Room message is empty": "اكتب رسالة أو اختر إجابة لنشرها.",
+  "Explicit room publishing consent is required":
+    "أكد موافقتك على نشر الرسالة والإجابة لأعضاء الدفتر.",
+  "Room request ID already used":
+    "تغير محتوى طلب النشر. أعد المحاولة بطلب جديد.",
+  "Cannot invite notebook owner": "لا يمكن دعوة مالك الدفتر نفسه.",
+  "Owner cannot leave notebook":
+    "المالك لا يغادر دفتره؛ يمكنه حذفه بعد التأكيد.",
+
+  "Explicit import consent is required":
+    "أكد فهمك لطبيعة النسخة وحقك في حفظها أولًا.",
+  "Only shared cards can be imported":
+    "الحفظ في المكتبة متاح للبطاقات فقط حاليًا.",
+  "Import request ID already used":
+    "استُخدم طلب الحفظ لنسخة أخرى. أعد فتح الرابط.",
+  "Pending report quota reached": "وصلت للحد الأقصى للبلاغات قيد المراجعة.",
+  "Select sources explicitly for semantic retrieval":
+    "حدد المصادر صراحة قبل استخدام البحث الدلالي.",
+  "Semantic retrieval is not configured":
+    "البحث الدلالي غير مفعّل. ألغِ اختياره لاستخدام البحث المحلي.",
+  "Semantic retrieval unavailable; narrow selected sources or retry later":
+    "البحث الدلالي غير متاح. قلّل المصادر المحددة أو أعد المحاولة لاحقًا؛ لم يتم التحويل إلى بحث محلي تلقائيًا.",
+  "Shared content is unavailable":
+    "النسخة المشتركة غير متاحة: قد يكون الرابط غير صالح أو منتهيًا أو مُلغًى.",
+  "Explicit sharing consent is required":
+    "راجع النص وأكد موافقتك على المشاركة أولًا.",
+  "Content changed since sharing preview":
+    "تغير المحتوى منذ المعاينة. حدّث المعاينة وراجعها قبل النشر.",
+  "Active share quota reached":
+    "لديك 20 رابط مشاركة نشطًا. ألغِ رابطًا قبل إنشاء آخر.",
+  "Share requires 1 to 50 cards":
+    "المشاركة تحتاج مجموعة بها من بطاقة واحدة إلى 50 بطاقة.",
+  "Request rate limit reached": "طلبات كثيرة خلال فترة قصيرة.",
+  "Request budget temporarily unavailable":
+    "تعذّر التحقق من حدود الاستخدام مؤقتًا. حاول مجددًا بعد قليل.",
+  "Notebook quota reached":
+    "وصلت للحد الأقصى لعدد الدفاتر في حسابك. احذف دفترًا لم تعد تحتاجه قبل إنشاء آخر.",
+  "Source quota reached":
+    "وصل هذا الدفتر للحد الأقصى من المصادر. استخدم دفترًا آخر أو احذف الدفتر كاملًا إذا لم تعد تحتاجه.",
+  "Active ingestion quota reached":
+    "بلغ هذا الدفتر الحد الأقصى لمهام المعالجة النشطة. انتظر اكتمال مهمة قبل إضافة ملف أو إعادة المحاولة.",
   "Password confirmation failed":
     "كلمة المرور غير صحيحة. لم يُحذف الحساب؛ أعد إدخالها للمحاولة.",
   "Deck not found": "مجموعة البطاقات غير متاحة.",
@@ -103,7 +177,18 @@ export function jobError(code: string | null | undefined) {
           "توقيت الترجمة غير صالح. استخدم SRT أو VTT صالحًا.",
         captions_too_large:
           "الترجمة تتجاوز الحد المسموح: 500 ألف محرف أو 20 ألف مقطع.",
-        ocr_required: "الملف مصوّر ويحتاج OCR، وهو غير مدعوم بعد.",
+        ocr_not_configured:
+          "محرك OCR يحتاج نماذج العربي والإنجليزي لدى مشغّل الخادم.",
+        ocr_unavailable: "مكتبات OCR المحلية غير مثبتة لدى مشغّل الخادم.",
+        ocr_page_limit:
+          "الحد الأقصى 10 صفحات تحتاج OCR في الملف الواحد. قسّم الملف.",
+        ocr_page_too_large: "أبعاد صفحة مصوّرة تتجاوز حد OCR. قلّل حجم الصفحة.",
+        ocr_low_confidence:
+          "لم يثق OCR في قراءة بعض النص. استخدم نسخة أوضح؛ لم تُنشر قراءة جزئية.",
+        ocr_failed: "تعذرت قراءة الملف بمحرك OCR المحلي. جرّب نسخة أوضح.",
+        ocr_invalid_document: "تعذر التحقق من ترتيب صفحات الملف أثناء OCR.",
+        ocr_required:
+          "لم يُعثر على نص قابل للاستخراج؛ قد يحتاج الملف OCR محليًا مفعّلًا أو نسخة أوضح.",
         unreadable_docx: "تعذّر قراءة مستند Word. جرّب نسخة DOCX أخرى.",
         unsupported_docx_type:
           "نوع المستند غير مدعوم. استخدم DOCX عاديًا دون ماكرو.",
@@ -147,6 +232,15 @@ export async function api<T>(
       window.dispatchEvent(new Event("knowlm:expired"));
     const body = await response.json().catch(() => ({}));
     const detail = typeof body.detail === "string" ? body.detail : "";
+    if (response.status === 429) {
+      const wait = Number(response.headers.get("Retry-After"));
+      throw new Error(
+        (translations[detail] || "تم تجاوز حد الطلبات.") +
+          (Number.isFinite(wait) && wait > 0 && wait <= 3600
+            ? ` يمكنك المحاولة بعد ${Math.ceil(wait)} ثانية.`
+            : " حاول مجددًا بعد قليل."),
+      );
+    }
     throw new Error(
       translations[detail] ||
         (response.status === 422

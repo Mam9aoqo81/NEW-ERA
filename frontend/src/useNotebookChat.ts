@@ -6,6 +6,7 @@ type Payload = {
   source_ids: string[];
   mode: "extractive" | "grounded";
   request_id: string;
+  semantic_consent?: boolean;
 };
 export type Turn = {
   id: string;
@@ -31,7 +32,7 @@ const restore = (t: StoredTurn): Turn => ({
   id: t.request_id,
   question: t.question,
   mode: t.mode,
-  answer: t.answer,
+  answer: { ...t.answer, turn_id: t.id },
   saved: true,
 });
 
@@ -157,9 +158,11 @@ export function useNotebookChat(notebookId: string, token: string) {
     question: string,
     source_ids: string[],
     mode: Payload["mode"],
+    semanticConsent = false,
   ) {
     return perform({
       question,
+      ...(semanticConsent ? { semantic_consent: true } : {}),
       source_ids: [...source_ids],
       mode,
       request_id: crypto.randomUUID(),

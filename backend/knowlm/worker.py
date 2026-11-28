@@ -90,6 +90,7 @@ def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript, 
         source = session.get(Source, job.source_id)
         source.status = 'failed' if error else 'ready'
         if not error:
+            source.ocr_pages = getattr(pages,'ocr_pages',[])
             session.execute(delete(Chunk).where(Chunk.source_id == source.id))
             for page_number, text in enumerate(pages, 1):
                 for index, start in enumerate(range(0, len(text), 900)):
@@ -113,7 +114,15 @@ def main():
     directory = os.getenv('KNOWLM_DATA_DIR', 'backend/data')
     engine = make_engine(os.getenv('DATABASE_URL', f'sqlite:///{directory}/knowlm.db'))
     logging.basicConfig(level=logging.INFO)
+    last_cleanup = 0.0
     while True:
+        if time.monotonic() - last_cleanup >= 30:
+            from knowlm.calls import purge_expired
+            try:
+                purge_expired(engine)
+            except Exception:
+                logger.warning("Call lease cleanup unavailable; verify migrations and database")
+            last_cleanup = time.monotonic()
         worked = run_once(engine)
         if args.once:
             break

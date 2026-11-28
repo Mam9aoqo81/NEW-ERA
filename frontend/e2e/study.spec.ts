@@ -442,3 +442,1502 @@ test("password-confirmed account deletion revokes all sessions", async ({
     timeout: 20000,
   });
 });
+
+test("real per-user question budget displays an Arabic retry message", async ({
+  page,
+}, info) => {
+  const username = `budget_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  const registered = await page.request.post("/v1/auth/register", {
+    data: { username, password },
+  });
+  expect(registered.status()).toBe(201);
+  const login = await page.request.post("/v1/auth/login", {
+    data: { username, password },
+  });
+  const token = (await login.json()).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const notebook = await page.request.post("/v1/notebooks", {
+    headers,
+    data: { title: "اختبار حد الأسئلة" },
+  });
+  const nid = (await notebook.json()).id;
+  // This suite uses the documented default of 30 questions per fixed minute.
+  // Freeze no server clocks: if a minute boundary intervenes, refill its budget.
+  let blocked: {
+    status: number;
+    body: string;
+    headers: Record<string, string>;
+  } | null = null;
+  for (let i = 0; i < 65; i++) {
+    const response = await page.request.post(`/v1/notebooks/${nid}/ask`, {
+      headers,
+      data: { question: "سؤال عن مصدر غير موجود" },
+    });
+    if (response.status() === 429) {
+      blocked = {
+        status: 429,
+        body: await response.text(),
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": response.headers()["retry-after"],
+        },
+      };
+      break;
+    }
+    expect(response.status()).toBe(200);
+  }
+  expect(blocked).not.toBeNull();
+  // Replay the actual API rejection only for the UI submission so a minute
+  // rollover during page load cannot make this assertion timing-dependent.
+  await page.route(`**/v1/notebooks/${nid}/ask`, (route) =>
+    route.fulfill(blocked!),
+  );
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    token,
+  );
+  // Add a source before opening the UI: empty-source notebooks correctly
+  // disable the question composer.
+  const source = await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: {
+      title: "مصدر الحد",
+      text: "هذه فقرة خاصة لاختبار حد الأسئلة في واجهة التطبيق.",
+    },
+  });
+  expect(source.status()).toBe(201);
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: "سؤالك عن المصادر" })
+    .fill("اختبار حد الأسئلة");
+  await page.getByRole("button", { name: "إرسال السؤال" }).click();
+  await expect(
+    page.getByText(/طلبات كثيرة خلال فترة قصيرة/).last(),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("knowlm-token")),
+  ).toBe(token);
+});
+
+test("consented card and quiz links work for anonymous visitors and can be revoked", async ({
+  page,
+  browser,
+}, info) => {
+  const username = `share_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر خاص لا يُنشر" },
+      })
+    ).json()
+  ).id;
+  const sid = (
+    await (
+      await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+        headers,
+        data: {
+          title: "اسم ملف خاص",
+          text: "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية. تستخدم النباتات الطاقة الضوئية لتحويل الماء وثاني أكسيد الكربون إلى سكريات.",
+        },
+      })
+    ).json()
+  ).id;
+  const deck = await (
+    await page.request.post(`/v1/notebooks/${nid}/decks/generate`, {
+      headers,
+      data: { title: "مراجعة خاصة", source_ids: [sid] },
+    })
+  ).json();
+  expect(
+    (
+      await page.request.post(`/v1/decks/${deck.id}/quizzes`, {
+        headers,
+        data: { count: 2 },
+      })
+    ).status(),
+  ).toBe(201);
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    token,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مشاركة البطاقات", exact: true })
+    .click();
+  await expect(page.getByLabel("النص الذي سيُنشر")).toContainText("____");
+  await expect(
+    page.getByRole("button", { name: "إنشاء رابط للنسخة المعاينة" }),
+  ).toBeDisabled();
+  await page.getByLabel("عنوان النسخة المشتركة").fill("بطاقات للزائر");
+  await page.getByRole("checkbox", { name: /راجعت النص كاملًا/ }).check();
+  await page
+    .getByRole("button", { name: "إنشاء رابط للنسخة المعاينة" })
+    .click();
+  const cardLink = await page.getByLabel("رابط المشاركة الجديد").inputValue();
+  expect(cardLink).toContain("/share#");
+  const visitor = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const guest = await visitor.newPage();
+    await guest.goto(cardLink);
+    await expect(
+      guest.getByRole("heading", { name: "بطاقات للزائر" }),
+    ).toBeVisible();
+    await guest.getByRole("button", { name: "إظهار الإجابة" }).click();
+    await expect(
+      guest.getByRole("button", { name: "إخفاء الإجابة" }),
+    ).toBeVisible();
+    await expect(guest.getByText("اسم ملف خاص", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      guest.getByText("دفتر خاص لا يُنشر", { exact: true }),
+    ).toHaveCount(0);
+    expect(
+      await guest.evaluate(() => sessionStorage.getItem("knowlm-token")),
+    ).toBeNull();
+    expect(
+      await guest.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false);
+    await guest.screenshot({
+      path: `../backend/data/shared-${info.project.name}.png`,
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "مشاركة البطاقات", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "اختبار تفاعلي", exact: true })
+      .click();
+    await page.getByLabel("اختبار محفوظ").selectOption({ index: 1 });
+    await page
+      .getByRole("button", { name: "مشاركة الاختبار", exact: true })
+      .click();
+    await page.getByLabel("عنوان النسخة المشتركة").fill("اختبار للزائر");
+    await page.getByRole("checkbox", { name: /راجعت النص كاملًا/ }).check();
+    await page
+      .getByRole("button", { name: "إنشاء رابط للنسخة المعاينة" })
+      .click();
+    const quizLink = await page.getByLabel("رابط المشاركة الجديد").inputValue();
+    await guest.goto(quizLink);
+    await expect(
+      guest.getByRole("heading", { name: "اختبار للزائر" }),
+    ).toBeVisible();
+    for (const field of await guest.locator(".quiz-question").all())
+      await field.getByRole("radio").first().check();
+    await guest.getByRole("button", { name: "تصحيح الاختبار المشترك" }).click();
+    await expect(guest.locator(".quiz-score")).toContainText("غير محفوظة");
+    await page
+      .getByRole("button", { name: "إلغاء رابط: اختبار للزائر" })
+      .click();
+    await page.getByRole("button", { name: "تأكيد إلغاء الرابط" }).click();
+    await expect(
+      page.getByRole("button", { name: "إلغاء رابط: اختبار للزائر" }),
+    ).toHaveCount(0);
+    await guest.reload();
+    await expect(guest.getByRole("alert")).toContainText("غير متاحة");
+    await guest.goto(cardLink);
+    await expect(
+      guest.getByRole("heading", { name: "بطاقات للزائر" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "إلغاء رابط: بطاقات للزائر" })
+      .click();
+    await page.getByRole("button", { name: "تأكيد إلغاء الرابط" }).click();
+    await expect(
+      page.getByRole("button", { name: "إلغاء رابط: بطاقات للزائر" }),
+    ).toHaveCount(0);
+    await guest.reload();
+    await expect(guest.getByRole("alert")).toContainText("غير متاحة");
+  } finally {
+    await visitor.close();
+  }
+});
+
+test("recipient saves independent cards and submits a report without gaining source access", async ({
+  page,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`;
+  const password = "development-test-password";
+  async function account(username: string) {
+    expect(
+      (
+        await page.request.post("/v1/auth/register", {
+          data: { username, password },
+        })
+      ).status(),
+    ).toBe(201);
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const owner = { Authorization: `Bearer ${await account("pub_" + suffix)}` };
+  const recipientToken = await account("save_" + suffix);
+  const recipient = { Authorization: `Bearer ${recipientToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "أصل خاص" },
+      })
+    ).json()
+  ).id;
+  const deck = (
+    await (
+      await page.request.post(`/v1/notebooks/${nid}/decks`, {
+        headers: owner,
+        data: { title: "مجموعة للحفظ" },
+      })
+    ).json()
+  ).id;
+  expect(
+    (
+      await page.request.post(`/v1/decks/${deck}/cards`, {
+        headers: owner,
+        data: { front: "سؤال مستقل", back: "إجابة مستقلة" },
+      })
+    ).status(),
+  ).toBe(201);
+  const preview = await (
+    await page.request.get(`/v1/decks/${deck}/share-preview`, {
+      headers: owner,
+    })
+  ).json();
+  const share = await (
+    await page.request.post(`/v1/decks/${deck}/shares`, {
+      headers: owner,
+      data: {
+        title: "للمراجعة والحفظ",
+        consent: true,
+        preview_hash: preview.preview_hash,
+      },
+    })
+  ).json();
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    recipientToken,
+  );
+  await page.goto(`/share#${share.token}`);
+  await expect(
+    page.getByRole("heading", { name: "للمراجعة والحفظ" }),
+  ).toBeVisible();
+  const save = page.getByRole("button", { name: "حفظ البطاقات في مكتبتي" });
+  await expect(save).toBeDisabled();
+  await page.getByRole("checkbox", { name: /أفهم أنها نسخة/ }).check();
+  await save.click();
+  await expect(page.getByText(/حُفظت نسخة مستقلة/)).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "سبب الإبلاغ" })
+    .selectOption("incorrect");
+  await page.getByRole("button", { name: "إرسال بلاغ للمراجعة" }).click();
+  await expect(page.getByText(/استُلم البلاغ للمراجعة البشرية/)).toBeVisible();
+  expect(
+    (
+      await page.request.get(`/v1/notebooks/${nid}/sources`, {
+        headers: recipient,
+      })
+    ).status(),
+  ).toBe(404);
+  const copies = await (
+    await page.request.get("/v1/notebooks", { headers: recipient })
+  ).json();
+  expect(copies).toHaveLength(1);
+  expect(
+    (
+      await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner })
+    ).status(),
+  ).toBe(204);
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: copies[0].title }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await expect(page.getByText("نسخة مشتركة · غير مدققة").first()).toBeVisible();
+  await expect(
+    page.getByText("سؤال مستقل", { exact: true }).first(),
+  ).toBeVisible();
+});
+
+test("local Arabic/English scanned PDF → OCR page 2 → persisted private citation", async ({
+  page,
+}, info) => {
+  const health = await (await page.request.get("/health")).json();
+  test.skip(
+    !health.ocr_enabled,
+    "Requires the optional local OCR worker and models",
+  );
+  const username = `ocr_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  await page.request.post("/v1/notebooks", {
+    headers,
+    data: { title: "قراءة صورة عربية وإنجليزية" },
+  });
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    token,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "إضافة مصدر", exact: true }).click();
+  await page
+    .getByLabel("ملف PDF", { exact: true })
+    .setInputFiles(path.resolve("../backend/tests/fixtures/ocr-bilingual.pdf"));
+  await page.getByRole("button", { name: "إضافة إلى مصادري" }).click();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: /^المصادر/ }).click();
+  await expect(
+    page.getByRole("checkbox", { name: /ocr-bilingual.pdf/ }),
+  ).toBeEnabled({ timeout: 25000 });
+  await expect(page.getByText(/OCR محلي · صفحات 2/)).toBeVisible();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: "اسأل وافهم", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "سؤالك عن المصادر" })
+    .fill("النباتات الشمس");
+  await page.getByRole("button", { name: "إرسال السؤال" }).click();
+  await page.getByRole("button", { name: /ocr-bilingual.pdf.*ص 2/ }).click();
+  await expect(
+    page.getByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
+  ).toBeVisible();
+  await expect(page.locator(".page-text .highlighted")).toContainText("الشمس");
+  await expect(page.locator(".page-text")).toContainText("Photosynthesis");
+  await page.screenshot({
+    path: `../backend/data/ocr-${info.project.name}.png`,
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await page.reload();
+  await page.getByRole("button", { name: /ocr-bilingual.pdf.*ص 2/ }).click();
+  await expect(
+    page.getByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
+  ).toBeVisible();
+});
+
+test("targeted notebook invitation → private chats → explicit room answer → role change and removal", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  const ownerName = "team_owner_" + suffix,
+    memberName = "team_member_" + suffix;
+  async function register(username: string) {
+    expect(
+      (
+        await page.request.post("/v1/auth/register", {
+          data: { username, password },
+        })
+      ).status(),
+    ).toBe(201);
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await register(ownerName);
+  await register(memberName);
+  const owner = { Authorization: `Bearer ${ownerToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "دفتر الفريق التجريبي" },
+      })
+    ).json()
+  ).id;
+  expect(
+    (
+      await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+        headers: owner,
+        data: {
+          title: "مصدر الفريق",
+          text: "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء. تستخدم النباتات ضوء الشمس لتحويل الماء وثاني أكسيد الكربون إلى سكريات.",
+        },
+      })
+    ).status(),
+  ).toBe(201);
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    ownerToken,
+  );
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+    .click();
+  await page
+    .getByRole("textbox", { name: "اسم المستخدم المدعو" })
+    .fill(memberName);
+  await expect(
+    page.getByRole("button", { name: "إنشاء دعوة لمدة 7 أيام" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("checkbox", { name: /أوافق على إتاحة كل مصادر/ })
+    .check();
+  await page.getByRole("button", { name: "إنشاء دعوة لمدة 7 أيام" }).click();
+  const link = await page
+    .getByRole("textbox", { name: "رابط دعوة جديد" })
+    .inputValue();
+  const context = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const member = await context.newPage();
+    await member.goto(link);
+    await member
+      .getByRole("textbox", { name: "اسم المستخدم", exact: true })
+      .fill(memberName);
+    await member.getByLabel("كلمة المرور", { exact: true }).fill(password);
+    await member
+      .getByRole("button", { name: "ادخل إلى مساحتك", exact: true })
+      .click();
+    await expect(
+      member.getByRole("heading", { name: "دفتر الفريق التجريبي" }),
+    ).toBeVisible();
+    await member.getByRole("checkbox", { name: /أقبل الوصول لمصادر/ }).check();
+    await member.getByRole("button", { name: "قبول دعوة الدفتر" }).click();
+    await expect(member.getByRole("status")).toContainText("انضممت للدفتر");
+    await member.getByRole("link", { name: "KnowLM · مساحة الدراسة" }).click();
+    await expect(
+      member.getByRole("heading", { level: 1, name: "دفتر الفريق التجريبي" }),
+    ).toBeVisible();
+    await expect(
+      member.getByRole("button", { name: "حذف الدفتر", exact: true }),
+    ).toHaveCount(0);
+    await member
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await expect(
+      member.getByText("صلاحيتك: قارئ", { exact: true }),
+    ).toBeVisible();
+    if (info.project.name === "mobile")
+      await page
+        .getByRole("button", { name: "اسأل وافهم", exact: true })
+        .click();
+    await page
+      .getByRole("textbox", { name: "سؤالك عن المصادر" })
+      .fill("البناء الضوئي");
+    await page.getByRole("button", { name: "إرسال السؤال" }).click();
+    await expect(
+      page.getByRole("button", { name: /مصدر الفريق.*ص 1/ }),
+    ).toBeVisible();
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(member.locator(".room-message")).toHaveCount(0);
+    await page
+      .getByRole("combobox", { name: "إرفاق إجابة من محادثتي الخاصة" })
+      .selectOption({ index: 1 });
+    await page
+      .getByRole("textbox", { name: "رسالة لأعضاء الدفتر" })
+      .fill("إجابة اخترت نشرها للفريق");
+    await page
+      .getByRole("checkbox", { name: /راجعت الرسالة والإجابة المرفقة/ })
+      .check();
+    await page
+      .getByRole("button", { name: "نشر في غرفة الدفتر", exact: true })
+      .click();
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(member.locator(".room-message")).toContainText(
+      "إجابة اخترت نشرها للفريق",
+    );
+    await expect(member.locator(".room-message")).toContainText(
+      "البلاستيدات الخضراء",
+    );
+    const memberToken = await member.evaluate(() =>
+      sessionStorage.getItem("knowlm-token"),
+    );
+    const memberHeaders = { Authorization: `Bearer ${memberToken}` };
+    expect(
+      (
+        await (
+          await member.request.get(`/v1/notebooks/${nid}/history`, {
+            headers: memberHeaders,
+          })
+        ).json()
+      ).turns,
+    ).toHaveLength(0);
+    await member
+      .getByRole("textbox", { name: "رسالة لأعضاء الدفتر" })
+      .fill("مشاركة من القارئ");
+    await member
+      .getByRole("checkbox", { name: /راجعت الرسالة والإجابة المرفقة/ })
+      .check();
+    await member
+      .getByRole("button", { name: "نشر في غرفة الدفتر", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(page.locator(".room-message")).toContainText([
+      "إجابة اخترت نشرها للفريق",
+      "مشاركة من القارئ",
+    ]);
+    await page
+      .getByRole("combobox", { name: `صلاحية ${memberName}` })
+      .selectOption("editor");
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(
+      member.getByText("صلاحيتك: محرر", { exact: true }),
+    ).toBeVisible();
+    expect(
+      (
+        await member.request.post(`/v1/notebooks/${nid}/sources/text`, {
+          headers: memberHeaders,
+          data: { title: "إضافة محرر", text: "مصدر أضافه عضو الفريق" },
+        })
+      ).status(),
+    ).toBe(201);
+    await member.screenshot({
+      path: `../backend/data/collaboration-${info.project.name}.png`,
+      fullPage: true,
+    });
+    expect(
+      await member.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false);
+    await page
+      .getByRole("button", { name: `إزالة ${memberName}`, exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: `تأكيد إزالة ${memberName}`, exact: true })
+      .click();
+    await expect(
+      page.getByRole("combobox", { name: `صلاحية ${memberName}` }),
+    ).toHaveCount(0);
+    expect(
+      (
+        await member.request.get(`/v1/notebooks/${nid}/sources`, {
+          headers: memberHeaders,
+        })
+      ).status(),
+    ).toBe(404);
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(
+      member.locator(".collaboration-body [role=alert]"),
+    ).toContainText("لا تملك صلاحية");
+    await expect(member.locator(".room-message")).toHaveCount(0);
+  } finally {
+    await context.close().catch(() => {});
+  }
+});
+
+test("explicit public publication → anonymous cards → save/follow/comment/report/block → unpublish", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password",
+    title = `مراجعة عامة ${suffix}`;
+  async function account(username: string) {
+    expect(
+      (
+        await page.request.post("/v1/auth/register", {
+          data: { username, password },
+        })
+      ).status(),
+    ).toBe(201);
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await account(`public_owner_${suffix}`),
+    readerToken = await account(`public_reader_${suffix}`);
+  const headers = { Authorization: `Bearer ${ownerToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر لا يُنشر" },
+      })
+    ).json()
+  ).id;
+  const deck = (
+    await (
+      await page.request.post(`/v1/notebooks/${nid}/decks`, {
+        headers,
+        data: { title: "مجموعة عامة" },
+      })
+    ).json()
+  ).id;
+  expect(
+    (
+      await page.request.post(`/v1/decks/${deck}/cards`, {
+        headers,
+        data: { front: "سؤال للعامة", back: "إجابة للعامة" },
+      })
+    ).status(),
+  ).toBe(201);
+  const preview = await (
+    await page.request.get(`/v1/decks/${deck}/share-preview`, { headers })
+  ).json();
+  const share = await (
+    await page.request.post(`/v1/decks/${deck}/shares`, {
+      headers,
+      data: { title, consent: true, preview_hash: preview.preview_hash },
+    })
+  ).json();
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    ownerToken,
+  );
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "أدوات المراجعة", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "مشاركة البطاقات", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: `نشر للمجتمع: ${title}`, exact: true })
+    .click();
+  const publish = page.getByRole("button", {
+    name: "تأكيد النشر العام",
+    exact: true,
+  });
+  await expect(publish).toBeDisabled();
+  await page
+    .getByLabel("اسم المنهج وإصداره", { exact: true })
+    .fill(`منهج تجريبي ${suffix}`);
+  await page
+    .getByRole("checkbox", { name: /راجعت كل النص وأملك حق نشره للعامة/ })
+    .check();
+  await publish.click();
+  const link = await page
+    .getByRole("link", { name: "فتح المنشور العام", exact: true })
+    .getAttribute("href");
+  expect(link).not.toContain(share.token);
+  const anonymous = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  const recipient = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const guest = await anonymous.newPage();
+    await guest.goto(link!);
+    await expect(
+      guest.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
+    await guest.getByText("سؤال للعامة", { exact: true }).click();
+    await expect(
+      guest.getByText("إجابة للعامة", { exact: true }),
+    ).toBeVisible();
+    await expect(guest.getByText("دفتر لا يُنشر", { exact: true })).toHaveCount(
+      0,
+    );
+    expect(
+      await guest.evaluate(() => sessionStorage.getItem("knowlm-token")),
+    ).toBeNull();
+    await recipient.addInitScript(
+      (t) => sessionStorage.setItem("knowlm-token", t),
+      readerToken,
+    );
+    const reader = await recipient.newPage();
+    await reader.goto(link!);
+    await reader
+      .getByRole("button", { name: "حفظ المنشور", exact: true })
+      .click();
+    await expect(
+      reader.getByRole("button", { name: "إلغاء حفظ المنشور", exact: true }),
+    ).toBeVisible();
+    await reader
+      .getByRole("button", { name: "متابعة الناشر", exact: true })
+      .click();
+    await expect(
+      reader.getByRole("button", { name: "إلغاء متابعة الناشر", exact: true }),
+    ).toBeVisible();
+    await reader
+      .getByRole("textbox", { name: "تعليق عام", exact: true })
+      .fill("تعليق تجريبي ظاهر للعامة");
+    await expect(
+      reader.getByRole("button", { name: "نشر التعليق العام", exact: true }),
+    ).toBeDisabled();
+    await reader
+      .getByRole("checkbox", {
+        name: /أوافق على نشر التعليق واسم حسابي للعامة/,
+      })
+      .check();
+    await reader
+      .getByRole("button", { name: "نشر التعليق العام", exact: true })
+      .click();
+    await expect(reader.locator(".community-comment")).toContainText(
+      "تعليق تجريبي ظاهر للعامة",
+    );
+    await reader
+      .getByRole("button", { name: "إرسال بلاغ عن المنشور", exact: true })
+      .click();
+    await expect(reader.getByRole("status")).toContainText("استُلم البلاغ");
+    await reader.screenshot({
+      path: `../backend/data/community-${info.project.name}.png`,
+      fullPage: true,
+    });
+    expect(
+      await reader.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false);
+    await reader
+      .getByRole("button", { name: "حظر الناشر", exact: true })
+      .click();
+    await reader
+      .getByRole("button", { name: "تأكيد حظر الناشر", exact: true })
+      .click();
+    await expect(
+      reader.getByRole("link", { name: title, exact: true }),
+    ).toHaveCount(0);
+    await reader
+      .getByRole("button", {
+        name: `إلغاء حظر public_owner_${suffix}`,
+        exact: true,
+      })
+      .click();
+    await reader
+      .getByLabel("اسم المنهج وإصداره بالتطابق الكامل", { exact: true })
+      .fill(`منهج تجريبي ${suffix}`);
+    await reader.getByRole("link", { name: title, exact: true }).click();
+    await expect(
+      reader.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
+    await page.goto(link!);
+    await page
+      .getByRole("button", { name: "إلغاء النشر العام", exact: true })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "تأكيد إلغاء النشر العام وحذف تعليقاته وحفظه من القوائم",
+        exact: true,
+      })
+      .click();
+    await guest.reload();
+    await expect(guest.getByRole("alert")).toContainText("المنشور غير متاح");
+    expect(
+      (
+        await page.request.get("/v1/shared/view", {
+          headers: { "X-KnowLM-Share": share.token },
+        })
+      ).status(),
+    ).toBe(200);
+  } finally {
+    await anonymous.close().catch(() => {});
+    await recipient.close().catch(() => {});
+  }
+});
+
+test("private ink canvas persists real pointer strokes and notes", async ({
+  page,
+}, info) => {
+  const username = `ink_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر القلم" },
+      })
+    ).json()
+  ).id;
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByText("لوحة المذاكرة بالقلم والملاحظات · خاصة بي").click();
+  const notes = page.getByLabel("ملاحظاتي النصية");
+  await expect(notes).toBeEnabled();
+  await notes.fill("ملاحظة محفوظة بالقلم");
+  const ink = page.getByRole("img", { name: /مساحة رسم بالقلم/ });
+  await ink.scrollIntoViewIfNeeded();
+  const box = (await ink.boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5, {
+    steps: 8,
+  });
+  await page.mouse.up();
+  await expect(ink.locator("polyline")).toHaveCount(1);
+  await page.getByRole("button", { name: "حفظ اللوحة", exact: true }).click();
+  await expect(page.getByText("تم حفظ اللوحة الخاصة")).toBeVisible();
+  const saved = await (
+    await page.request.get(`/v1/notebooks/${nid}/canvas`, { headers })
+  ).json();
+  expect(saved.strokes).toHaveLength(1);
+  expect(saved.strokes[0].points.length).toBeGreaterThan(1);
+  await page.reload();
+  await page.getByText("لوحة المذاكرة بالقلم والملاحظات · خاصة بي").click();
+  await expect(notes).toHaveValue("ملاحظة محفوظة بالقلم");
+  await expect(ink.locator("polyline")).toHaveCount(1);
+  await ink.screenshot({
+    path: `../backend/data/canvas-${info.project.name}.png`,
+  });
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});
+
+test("source-selected review dialogue persists with private citations and downloadable transcript", async ({
+  page,
+}, info) => {
+  const username = `podcast_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر الحوار" },
+      })
+    ).json()
+  ).id;
+  const text =
+    "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.";
+  await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: { title: "مرجع الحوار", text },
+  });
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  await page.getByLabel("نوع المخرج").selectOption("podcast");
+  await page
+    .getByRole("button", { name: "إنشاء وحفظ من المصادر المحددة" })
+    .click();
+  const player = page.getByRole("region", { name: "مشغل حوار المراجعة" });
+  await expect(player.getByText(text, { exact: true })).toBeVisible();
+  await expect(
+    player.getByText("ماذا يقول المقطع المختار؟", { exact: true }),
+  ).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await player.getByRole("button", { name: "تنزيل نص الحوار" }).click();
+  expect((await downloadPromise).suggestedFilename()).toBe(
+    "knowlm-review-dialogue.txt",
+  );
+  await player
+    .getByRole("button", { name: "فتح مرجع المقطع 2", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  await expect(player.getByText(text, { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await player.screenshot({
+    path: `../backend/data/podcast-${info.project.name}.png`,
+  });
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});
+
+test("WAV player decodes fixture, seeks by measured cue, downloads once and pauses for citation", async ({
+  page,
+}, info) => {
+  const username = `wav_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  await page.request.post("/v1/auth/register", {
+    data: { username, password },
+  });
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر توقيت الصوت" },
+      })
+    ).json()
+  ).id;
+  await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: {
+      title: "مرجع الملف الصوتي",
+      text: "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.",
+    },
+  });
+  const artifact = await (
+    await page.request.post(`/v1/notebooks/${nid}/study-artifacts`, {
+      headers,
+      data: { kind: "podcast" },
+    })
+  ).json();
+  // Actual decodable PCM fixture, NOT synthesized speech or a live TTS claim.
+  const wav = Buffer.alloc(44 + 32000);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24);
+  wav.writeUInt32LE(16000, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(32000, 40);
+  let generations = 0;
+  await page.route("**/v1/audio/config", (route) =>
+    route.fulfill({ json: { enabled: true } }),
+  );
+  await page.route(`**/v1/study-artifacts/${artifact.id}/audio`, (route) => {
+    generations++;
+    return route.fulfill({
+      body: wav,
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-KnowLM-Audio-Cues": JSON.stringify([
+          { index: 0, start: 0, end: 1 },
+          { index: 1, start: 1, end: 2 },
+        ]),
+      },
+    });
+  });
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  const region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
+  await region.getByLabel(/أوافق على إرسال نص الحوار/).check();
+  await region.getByRole("button", { name: "توليد ملف WAV" }).click();
+  const audio = region.getByLabel("مشغل ملف الحوار");
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.duration))
+    .toBe(2);
+  expect(await audio.evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
+  await region.getByRole("button", { name: /انتقل للمقطع 2/ }).click();
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.currentTime))
+    .toBe(1);
+  await audio.evaluate((el: HTMLAudioElement) => el.play());
+  await region
+    .getByRole("button", { name: "فتح مرجع الصوت 2", exact: true })
+    .click();
+  expect(await audio.evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await region.getByRole("link", { name: "تنزيل ملف WAV" }).click();
+  expect((await download).suggestedFilename()).toBe("knowlm-review.wav");
+  expect(generations).toBe(1);
+  await region.screenshot({
+    path: `../backend/data/wav-player-${info.project.name}.png`,
+  });
+  await region.getByRole("button", { name: "مسح الصوت المؤقت" }).click();
+  await expect(audio).toHaveCount(0);
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});
+
+test("real local speech → consented archive → restore → interrupt with source-only question → erase", async ({
+  page,
+}, info) => {
+  const username = `localtts_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  await page.request.post("/v1/auth/register", {
+    data: { username, password },
+  });
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const config = await (
+    await page.request.get("/v1/audio/config", { headers })
+  ).json();
+  test.skip(
+    config.engine !== "local_espeak" || !config.enabled,
+    "Requires explicitly enabled optional local speech engine",
+  );
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر الصوت المحلي" },
+      })
+    ).json()
+  ).id;
+  const text =
+    "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.";
+  await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: { title: "مصدر الصوت الحقيقي", text },
+  });
+  await page.request.post(`/v1/notebooks/${nid}/study-artifacts`, {
+    headers,
+    data: { kind: "podcast" },
+  });
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  let region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
+  await region.getByLabel("أوافق على توليد ملف صوتي محلي من نص الحوار").check();
+  await region
+    .getByLabel("أوافق على حفظ التسجيل في قاعدة بيانات الدفتر لاستعادته لاحقًا")
+    .check();
+  await region.getByRole("button", { name: "توليد ملف WAV" }).click();
+  let audio = region.getByLabel("مشغل ملف الحوار");
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.duration))
+    .toBeGreaterThan(2);
+  await expect(region.getByText("يوجد تسجيل محفوظ خاص بالمالك")).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
+  await region.getByRole("button", { name: "تحميل التسجيل المحفوظ" }).click();
+  audio = region.getByLabel("مشغل ملف الحوار");
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.duration))
+    .toBeGreaterThan(2);
+  await audio.evaluate((el: HTMLAudioElement) => el.play());
+  const question = page.getByRole("region", { name: "اسأل أثناء الاستماع" });
+  await question.getByLabel("سؤال أثناء الاستماع").fill("البناء الضوئي");
+  expect(await audio.evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
+  await question
+    .getByRole("button", { name: "ابحث في المصادر المحددة" })
+    .click();
+  await expect(
+    question.getByRole("article", { name: "إجابة سؤال الاستماع" }),
+  ).toContainText("البلاستيدات");
+  await question.getByRole("button", { name: /مرجع إجابة الاستماع 1/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await region.screenshot({
+    path: `../backend/data/local-speech-${info.project.name}.png`,
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await region.getByRole("button", { name: "حذف التسجيل المحفوظ" }).click();
+  await expect(region.getByText("يوجد تسجيل محفوظ خاص بالمالك")).toHaveCount(0);
+  await expect(audio).toHaveCount(0);
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});
+
+test("shared Pomodoro starts, pauses across accounts and survives reload without viewer controls", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  async function account(username: string) {
+    await page.request.post("/v1/auth/register", {
+      data: { username, password },
+    });
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await account(`focusowner_${suffix}`),
+    viewerName = `focusviewer_${suffix}`,
+    viewerToken = await account(viewerName);
+  const owner = { Authorization: `Bearer ${ownerToken}` },
+    viewer = { Authorization: `Bearer ${viewerToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "دفتر مؤقت الفريق" },
+      })
+    ).json()
+  ).id;
+  const invitation = await (
+    await page.request.post(`/v1/notebooks/${nid}/invitations`, {
+      headers: owner,
+      data: { username: viewerName, role: "viewer", consent: true },
+    })
+  ).json();
+  expect(
+    (
+      await page.request.post("/v1/collaboration/accept", {
+        headers: { ...viewer, "X-KnowLM-Invite": invitation.token },
+        data: { consent: true },
+      })
+    ).status(),
+  ).toBe(200);
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    ownerToken,
+  );
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "مؤقت Pomodoro المشترك 25/5" })
+    .click();
+  const timer = page.getByRole("region", { name: "مؤقت المذاكرة المشترك" });
+  await expect(timer.getByLabel("الوقت المتبقي")).toHaveText("25:00");
+  await timer.getByRole("button", { name: "بدء المؤقت", exact: true }).click();
+  await expect(timer.getByText("المؤقت يعمل", { exact: true })).toBeVisible();
+  const context = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const member = await context.newPage();
+    await member.addInitScript(
+      (t) => sessionStorage.setItem("knowlm-token", t),
+      viewerToken,
+    );
+    await member.goto(new URL("/", page.url()).href);
+    await member
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await member
+      .getByRole("button", { name: "مؤقت Pomodoro المشترك 25/5" })
+      .click();
+    const otherTimer = member.getByRole("region", {
+      name: "مؤقت المذاكرة المشترك",
+    });
+    await expect(
+      otherTimer.getByText("المؤقت يعمل", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      otherTimer.getByRole("button", { name: "بدء المؤقت", exact: true }),
+    ).toHaveCount(0);
+    await expect(otherTimer.getByText(/أنت قارئ/)).toBeVisible();
+    await page.bringToFront();
+    await timer
+      .getByRole("button", { name: "إيقاف المؤقت مؤقتًا", exact: true })
+      .click();
+    await expect(
+      timer.getByText("المؤقت متوقف", { exact: true }),
+    ).toBeVisible();
+    await member.bringToFront();
+    await expect(
+      otherTimer.getByText("المؤقت متوقف", { exact: true }),
+    ).toBeVisible({ timeout: 12000 });
+    const paused = await otherTimer.getByLabel("الوقت المتبقي").textContent();
+    await member.reload();
+    await member
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await member
+      .getByRole("button", { name: "مؤقت Pomodoro المشترك 25/5" })
+      .click();
+    await expect(otherTimer.getByLabel("الوقت المتبقي")).toHaveText(paused!);
+    await otherTimer.screenshot({
+      path: `../backend/data/pomodoro-${info.project.name}.png`,
+    });
+    await page.bringToFront();
+    page.once("dialog", (dialog) => dialog.accept());
+    await timer
+      .getByRole("button", { name: "إعادة ضبط الفترة", exact: true })
+      .click();
+    await expect(timer.getByLabel("الوقت المتبقي")).toHaveText("25:00");
+  } finally {
+    await context.close();
+    await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner });
+  }
+});
+
+test("real WebRTC transports simulated camera/audio between two authorized accounts and stops on removal", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  async function account(username: string) {
+    await page.request.post("/v1/auth/register", {
+      data: { username, password },
+    });
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await account(`callowner_${suffix}`),
+    memberName = `callmember_${suffix}`,
+    memberToken = await account(memberName);
+  const owner = { Authorization: `Bearer ${ownerToken}` },
+    memberHeaders = { Authorization: `Bearer ${memberToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "دفتر اختبار الاتصال" },
+      })
+    ).json()
+  ).id;
+  const invitation = await (
+    await page.request.post(`/v1/notebooks/${nid}/invitations`, {
+      headers: owner,
+      data: { username: memberName, role: "viewer", consent: true },
+    })
+  ).json();
+  await page.request.post("/v1/collaboration/accept", {
+    headers: { ...memberHeaders, "X-KnowLM-Invite": invitation.token },
+    data: { consent: true },
+  });
+  const context = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+    permissions: ["camera", "microphone"],
+  });
+  const member = await context.newPage();
+  const root = process.env.KNOWLM_TEST_URL || "http://127.0.0.1:5173";
+  async function prepare(target: typeof page, token: string) {
+    await target.addInitScript((t) => {
+      sessionStorage.setItem("knowlm-token", t);
+      const test = window as unknown as {
+        testPcs: RTCPeerConnection[];
+        testTracks: MediaStreamTrack[];
+      };
+      test.testPcs = [];
+      test.testTracks = [];
+      const Original = window.RTCPeerConnection;
+      window.RTCPeerConnection = class extends Original {
+        constructor(config?: RTCConfiguration) {
+          super(config);
+          test.testPcs.push(this);
+        }
+      };
+      const acquire = navigator.mediaDevices.getUserMedia.bind(
+        navigator.mediaDevices,
+      );
+      navigator.mediaDevices.getUserMedia = async (constraints) => {
+        const stream = await acquire(constraints);
+        test.testTracks.push(...stream.getTracks());
+        return stream;
+      };
+    }, token);
+    await target.goto(root);
+    await target
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await target
+      .getByRole("button", { name: "مكالمة صوت وفيديو · شخصان" })
+      .click();
+    const call = target.getByRole("region", { name: "مكالمة الدفتر" });
+    await call
+      .getByLabel("إرسال فيديو الكاميرا أيضًا (الافتراضي صوت فقط)")
+      .check();
+    await call.getByLabel(/أوافق على تشغيل الأجهزة المحددة/).check();
+    await call
+      .getByRole("button", { name: "انضم للمكالمة", exact: true })
+      .click();
+    await expect(
+      call.getByRole("button", { name: "إنهاء المكالمة وإيقاف الأجهزة" }),
+    ).toBeVisible();
+    return call;
+  }
+  try {
+    const ownCall = await prepare(page, ownerToken),
+      otherCall = await prepare(member, memberToken);
+    await expect(
+      ownCall.getByText("المكالمة متصلة", { exact: true }),
+    ).toBeVisible({ timeout: 20000 });
+    await expect(
+      otherCall.getByText("المكالمة متصلة", { exact: true }),
+    ).toBeVisible({ timeout: 20000 });
+    await expect
+      .poll(
+        () =>
+          otherCall
+            .getByLabel("وسائط المشارك الآخر")
+            .evaluate((element: HTMLVideoElement) => element.videoWidth),
+        { timeout: 15000 },
+      )
+      .toBeGreaterThan(0);
+    await expect
+      .poll(
+        () =>
+          member.evaluate(async () => {
+            const pcs = (window as unknown as { testPcs: RTCPeerConnection[] })
+              .testPcs;
+            let audio = 0,
+              video = 0;
+            for (const pc of pcs) {
+              const stats = await pc.getStats();
+              stats.forEach((s) => {
+                if (s.type === "inbound-rtp") {
+                  if ((s.kind || s.mediaType) === "audio")
+                    audio += s.bytesReceived || 0;
+                  if ((s.kind || s.mediaType) === "video")
+                    video += s.bytesReceived || 0;
+                }
+              });
+            }
+            return audio > 0 && video > 0;
+          }),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    await ownCall
+      .getByRole("button", { name: "كتم الميكروفون", exact: true })
+      .click();
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as { testTracks: MediaStreamTrack[] }).testTracks
+          .filter((t) => t.kind === "audio")
+          .every((t) => !t.enabled),
+      ),
+    ).toBe(true);
+    await otherCall.screenshot({
+      path: `../backend/data/call-${info.project.name}.png`,
+    });
+    const memberId = (
+      await (
+        await page.request.get("/v1/auth/me", { headers: memberHeaders })
+      ).json()
+    ).id;
+    expect(
+      (
+        await page.request.delete(`/v1/notebooks/${nid}/members/${memberId}`, {
+          headers: owner,
+        })
+      ).status(),
+    ).toBe(204);
+    await expect
+      .poll(
+        () =>
+          member.evaluate(() =>
+            (
+              window as unknown as { testTracks: MediaStreamTrack[] }
+            ).testTracks.every((t) => t.readyState === "ended"),
+          ),
+        { timeout: 12000 },
+      )
+      .toBe(true);
+    const leave = ownCall.getByRole("button", {
+      name: "إنهاء المكالمة وإيقاف الأجهزة",
+    });
+    if (await leave.count()) await leave.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { testTracks: MediaStreamTrack[] }
+          ).testTracks.every((t) => t.readyState === "ended"),
+        ),
+      )
+      .toBe(true);
+  } finally {
+    await context.close();
+    await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner });
+  }
+});

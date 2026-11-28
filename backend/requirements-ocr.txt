@@ -1,0 +1,5 @@
+# Optional local OCR dependencies; see docs/OCR.md for model setup and licenses.
+# Install after requirements.lock.txt. Models are NOT downloaded at request time.
+tesserocr==2.13.0
+pypdfium2==5.15.2
+Pillow==12.3.0

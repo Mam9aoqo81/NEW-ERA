@@ -1,4 +1,8 @@
+import Community from "./Community";
+import Collaboration, { JoinNotebook } from "./Collaboration";
+import SharedLearning from "./Sharing";
 import StudyTools from "./StudyTools";
+import Canvas from "./Canvas";
 import { citationLabel, isTimed, safeVideoLink } from "./citations";
 import { useNotebookChat } from "./useNotebookChat";
 import {
@@ -214,6 +218,7 @@ function Auth({ onLogin }: { onLogin: (token: string, user: User) => void }) {
           </form>
           <div className="privacy-line">
             <ShieldCheck size={16} /> دفاترك خاصة. أنت تختار ما تضيفه.
+            <a href="/community">تصفّح مجتمع المراجعة</a>
           </div>
         </div>
         <footer>
@@ -294,6 +299,18 @@ function Auth({ onLogin }: { onLogin: (token: string, user: User) => void }) {
 }
 
 export default function App() {
+  if (window.location.pathname === "/community")
+    return <Community auth={(onLogin) => <Auth onLogin={onLogin} />} />;
+  if (window.location.pathname === "/join")
+    return <JoinNotebook auth={(onLogin) => <Auth onLogin={onLogin} />} />;
+  return window.location.pathname === "/share" ? (
+    <SharedLearning />
+  ) : (
+    <PrivateApp />
+  );
+}
+
+function PrivateApp() {
   const [token, setToken] = useState<string | null>(() =>
       sessionStorage.getItem("knowlm-token"),
     ),
@@ -305,6 +322,7 @@ export default function App() {
     [create, setCreate] = useState(false),
     [error, setError] = useState(""),
     [llm, setLlm] = useState(false),
+    [semantic, setSemantic] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
     [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const clear = useCallback(() => {
@@ -351,8 +369,11 @@ export default function App() {
     };
   }, [token]);
   useEffect(() => {
-    api<{ llm_configured: boolean }>("/health")
-      .then((h) => setLlm(h.llm_configured))
+    api<{ llm_configured: boolean; semantic_configured?: boolean }>("/health")
+      .then((h) => {
+        setLlm(h.llm_configured);
+        setSemantic(!!h.semantic_configured);
+      })
       .catch(() => setLlm(false));
   }, []);
   function login(t: string, u: User) {
@@ -534,6 +555,7 @@ export default function App() {
             notebook={selected}
             token={token}
             llm={llm}
+            semantic={semantic}
             onDeleted={() => {
               const remaining = notebooks.filter((n) => n.id !== selected.id);
               setNotebooks(remaining);
@@ -692,13 +714,15 @@ function DeleteAccount({
       }}
     >
       <p className="muted">
-        سيُحذف حسابك وكل دفاترك ومصادرك ومحادثاتك وبطاقاتك ونتائجك من قاعدة
-        البيانات النشطة، وستُلغى كل جلسات الدخول. لا يمكن التراجع.
+        سيُحذف حسابك وكل الدفاتر التي تملكها ومصادرها ومحادثاتك وبطاقاتك ونتائجك
+        من قاعدة البيانات النشطة، وستُلغى كل جلسات الدخول. لا يمكن التراجع.
       </p>
       <p className="field-hint">
         لا يشمل ذلك النسخ الاحتياطية أو بيانات سبق إرسالها لمزوّد خارجي أو نسخًا
-        سبق تنزيلها. لو انقطع الرد بعد التنفيذ، أعد تحميل الصفحة للتحقق من
-        صلاحية جلستك؛ فشل الاتصال وحده لا يؤكد الحذف.
+        سبق تنزيلها. مصادر وأدوات أضفتها بصلاحية محرر في دفاتر يملكها آخرون تبقى
+        لديهم؛ رسائلك بالغرف ومحادثاتك ونتائجك الشخصية تُحذف. لو انقطع الرد بعد
+        التنفيذ، أعد تحميل الصفحة للتحقق من صلاحية جلستك؛ فشل الاتصال وحده لا
+        يؤكد الحذف.
       </p>
       <form onSubmit={submit}>
         <label>
@@ -754,13 +778,18 @@ function Workspace({
   notebook,
   token,
   llm,
+  semantic,
   onDeleted,
 }: {
   notebook: Notebook;
   token: string;
   llm: boolean;
+  semantic: boolean;
   onDeleted: () => void;
 }) {
+  const [role, setRole] = useState<"owner" | "editor" | "viewer">(
+    notebook.role || "owner",
+  );
   const [sources, setSources] = useState<Source[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false),
@@ -769,6 +798,7 @@ function Workspace({
     [question, setQuestion] = useState(""),
     [confirmClear, setConfirmClear] = useState(false),
     [mode, setMode] = useState<"extractive" | "grounded">("extractive"),
+    [semanticConsent, setSemanticConsent] = useState(false),
     [citation, setCitation] = useState<Citation | null>(null),
     [tab, setTab] = useState<"chat" | "sources">("chat"),
     [sampleBusy, setSampleBusy] = useState(false),
@@ -830,12 +860,21 @@ function Workspace({
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [chat.scrollRequest]);
+  useEffect(() => {
+    setSemanticConsent(false);
+  }, [selected.join(",")]);
+  useEffect(() => {
+    if (role !== "owner") {
+      setMode("extractive");
+      setSemanticConsent(false);
+    }
+  }, [role]);
   async function ask(e?: FormEvent, suggested?: string) {
     e?.preventDefault();
     const q = (suggested || question).trim();
     if (!q || !selected.length || busy || !chat.loaded || chat.loading) return;
     setQuestion("");
-    await chat.send(q, selected, mode);
+    await chat.send(q, selected, mode, semanticConsent);
   }
   async function olderMessages() {
     const el = chatScroll.current;
@@ -888,8 +927,12 @@ function Workspace({
           </div>
         </div>
         <div className="notebook-heading-actions">
+          <a className="outline" href="/community">
+            مجتمع المراجعة
+          </a>
           <button
             className="icon-button"
+            style={role !== "owner" ? { display: "none" } : undefined}
             aria-label="حذف الدفتر"
             title="حذف الدفتر"
             onClick={() => {
@@ -910,6 +953,7 @@ function Workspace({
           </button>
           <button
             className="outline"
+            disabled={role === "viewer"}
             onClick={() => {
               setAdd(true);
               setTab("sources");
@@ -919,6 +963,19 @@ function Workspace({
           </button>
         </div>
       </section>
+      <Collaboration
+        notebookId={notebook.id}
+        token={token}
+        turns={chat.turns}
+        onRole={setRole}
+        onLeave={onDeleted}
+      />
+      {role !== "owner" && (
+        <p className="external-warning">
+          دفتر تعاوني · {role === "editor" ? "محرر" : "قارئ"}. محادثتك ونتائجك
+          خاصة. إرسال المصادر لمزوّد خارجي والنشر العام للمالك فقط.
+        </p>
+      )}
       <div className="notebook-strip">
         <span>
           <ShieldCheck size={16} /> إجابات مرتبطة بمصادرك
@@ -928,7 +985,11 @@ function Workspace({
         </span>
         <span className="local-label">
           <span className="little-dot" />
-          {llm ? "التوليد الاختياري متاح" : "البحث المحلي · دون إرسال خارجي"}
+          {semanticConsent
+            ? "البحث الدلالي · إرسال خارجي بموافقتك"
+            : llm
+              ? "التوليد الاختياري متاح"
+              : "البحث المحلي · دون إرسال خارجي"}
         </span>
       </div>
       <div className={`mobile-tabs ${toolsOpen ? "tools-hidden" : ""}`}>
@@ -945,8 +1006,16 @@ function Workspace({
           <FileText size={16} /> المصادر <b>{sources.length}</b>
         </button>
       </div>
+      <Canvas
+        key={`${notebook.id}:${token}`}
+        notebookId={notebook.id}
+        token={token}
+        citation={citation}
+        onCitation={setCitation}
+      />
       {toolsOpen && (
         <StudyTools
+          role={role}
           notebookId={notebook.id}
           token={token}
           sourceIds={selected}
@@ -1064,6 +1133,12 @@ function Workspace({
                         </small>
                       </span>
                     </label>
+                    {!!s.ocr_pages?.length && (
+                      <p className="transcript-provenance">
+                        OCR محلي · صفحات {s.ocr_pages.join("، ")} · راجع الأصل
+                        لاحتمال أخطاء القراءة
+                      </p>
+                    )}
                     {s.kind === "youtube" && (
                       <p className="transcript-provenance">
                         {s.transcript_origin === "user_captions"
@@ -1080,7 +1155,10 @@ function Workspace({
                       <div className="source-failure">
                         <p>{jobError(s.job?.error_code)}</p>
                         {s.job && s.job.attempts < 3 && (
-                          <button onClick={() => void retry(s)}>
+                          <button
+                            disabled={role === "viewer"}
+                            onClick={() => void retry(s)}
+                          >
                             <RotateCcw size={13} /> إعادة المحاولة
                           </button>
                         )}
@@ -1090,7 +1168,11 @@ function Workspace({
                 ))}
               </>
             )}
-            <button className="upload-zone" onClick={() => setAdd(true)}>
+            <button
+              disabled={role === "viewer"}
+              className="upload-zone"
+              onClick={() => setAdd(true)}
+            >
               <span>
                 <Upload size={20} />
               </span>
@@ -1104,7 +1186,7 @@ function Workspace({
               <button
                 className="sample-button"
                 onClick={() => void sample()}
-                disabled={sampleBusy}
+                disabled={role === "viewer" || sampleBusy}
               >
                 {sampleBusy ? <Busy /> : <Sparkles size={15} />} جرّب بمصدر
                 تعليمي جاهز
@@ -1307,13 +1389,26 @@ function Workspace({
                   onChange={(e) => setMode(e.target.value as typeof mode)}
                 >
                   <option value="extractive">مقتطفات موثّقة · محلي</option>
-                  <option value="grounded" disabled={!llm}>
+                  <option value="grounded" disabled={!llm || role !== "owner"}>
                     إجابة مولّدة {llm ? "" : "· غير مفعّلة"}
                   </option>
                 </select>
               </label>
               <span>{selected.length} مصادر محددة</span>
             </div>
+            {semantic && role === "owner" && (
+              <label className="external-warning">
+                <input
+                  type="checkbox"
+                  checked={semanticConsent}
+                  onChange={(e) => setSemanticConsent(e.target.checked)}
+                />
+                أوافق على إرسال السؤال وكل مقاطع المصادر المحددة إلى مزوّد
+                embeddings الخارجي للبحث الدلالي التجريبي. قد تترتب تكلفة؛
+                التشابه ليس إثباتًا لصحة الإجابة. تُلغى الموافقة عند تغيير
+                المصادر.
+              </label>
+            )}
             {mode === "grounded" && (
               <p className="external-warning">
                 سيُرسل السؤال ومقتطفات المصادر المحددة إلى مزوّد التوليد الخارجي.
@@ -1625,7 +1720,7 @@ function AddSource({
               <span>
                 {type === "docx"
                   ? "DOCX · حتى 10 ميجابايت و5000 فقرة"
-                  : "PDF نصي · حتى 10 ميجابايت و200 صفحة"}
+                  : "PDF · حتى 10 ميجابايت و200 صفحة"}
               </span>
               <input
                 aria-label={type === "docx" ? "ملف Word" : "ملف PDF"}
@@ -1642,7 +1737,7 @@ function AddSource({
             <p className="field-hint">
               {type === "docx"
                 ? "نستخرج فقرات المتن والجداول فقط، وليس الصور أو الهوامش أو التعليقات. المرجع رقم فقرة مستخرجة، وليس صفحة Word الأصلية. ملفات DOC وDOCM غير مدعومة."
-                : "تتم المعالجة في الخلفية. الملفات المصوّرة والمحمية غير مدعومة حاليًا."}
+                : "تتم المعالجة في الخلفية. قراءة الصفحات المصوّرة تحتاج OCR محليًا مفعّلًا لدى المشغّل (حتى 10 صفحات مصوّرة). الملفات المحمية غير مدعومة."}
             </p>
           </>
         ) : type === "youtube" ? (
@@ -1829,6 +1924,13 @@ function CitationViewer({
             ? "المرجع رقم فقرة في متن Word المستخرج، وليس رقم صفحة أو موضعًا مضمونًا في تخطيط الملف الأصلي."
             : "هذا عرض للمقاطع النصية، وليس للملف الأصلي. قد تتداخل المقاطع."}
       </p>
+      {citation.ocr && (
+        <p className="external-warning">
+          هذا النص قُرئ آليًا من صورة بواسطة OCR وقد يحتوي أخطاء، خاصة الأرقام
+          والتشكيل والجداول. رقم الصفحة محفوظ، لكن موضع الكلمات غير محدد. راجع
+          الملف الأصلي قبل الاعتماد عليه.
+        </p>
+      )}
       {isTimed(citation) && citation.transcript_origin === "user_captions" && (
         <p className="external-warning">
           هذا النص مرفق يدويًا، ولم يُتحقق من مطابقته للفيديو.
