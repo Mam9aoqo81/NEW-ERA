@@ -1347,3 +1347,82 @@ test("private ink canvas persists real pointer strokes and notes", async ({
   });
   await page.request.delete(`/v1/notebooks/${nid}`, { headers });
 });
+
+test("source-selected review dialogue persists with private citations and downloadable transcript", async ({
+  page,
+}, info) => {
+  const username = `podcast_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر الحوار" },
+      })
+    ).json()
+  ).id;
+  const text =
+    "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.";
+  await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: { title: "مرجع الحوار", text },
+  });
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  await page.getByLabel("نوع المخرج").selectOption("podcast");
+  await page
+    .getByRole("button", { name: "إنشاء وحفظ من المصادر المحددة" })
+    .click();
+  const player = page.getByRole("region", { name: "مشغل حوار المراجعة" });
+  await expect(player.getByText(text, { exact: true })).toBeVisible();
+  await expect(
+    player.getByText("ماذا يقول المقطع المختار؟", { exact: true }),
+  ).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await player.getByRole("button", { name: "تنزيل نص الحوار" }).click();
+  expect((await downloadPromise).suggestedFilename()).toBe(
+    "knowlm-review-dialogue.txt",
+  );
+  await player
+    .getByRole("button", { name: "فتح مرجع المقطع 2", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  await expect(player.getByText(text, { exact: true })).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await player.screenshot({
+    path: `../backend/data/podcast-${info.project.name}.png`,
+  });
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});

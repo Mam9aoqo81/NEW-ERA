@@ -104,7 +104,8 @@ class StudyArtifact(Base):
 
 
 class ArtifactInput(BaseModel):
-    kind: Literal['study_guide', 'faq', 'briefing', 'timeline', 'mindmap']
+    language: Literal['ar', 'en'] = 'ar'
+    kind: Literal['study_guide', 'faq', 'briefing', 'timeline', 'mindmap', 'podcast']
     source_ids: list[str] | None = Field(default=None, max_length=100)
 
 
@@ -448,6 +449,17 @@ def register_learning(app, db, current_user, owned, readable=None):
             if len(blocks) >= (5 if body.kind == 'briefing' else 20): break
         if not blocks: raise HTTPException(422, 'No eligible source passages for this output')
         if body.kind == 'timeline': blocks.sort(key=lambda b: b['year'])
+        if body.kind == 'podcast':
+            # Fixed host prompts + literal source quotations, not invented discussion.
+            dialogue = []
+            for index, block in enumerate(blocks[:10]):
+                question = ('What does the selected passage say?' if body.language == 'en' else 'ماذا يقول المقطع المختار؟')
+                dialogue.append({**block, 'heading': 'Host' if body.language == 'en' else 'المحاور',
+                                 'text': question, 'speaker': 'host', 'language': body.language,
+                                 'origin': 'fixed_prompt'})
+                dialogue.append({**block, 'heading': 'Reader' if body.language == 'en' else 'القارئ',
+                                 'speaker': 'reader', 'language': body.language, 'origin': 'source_quote'})
+            blocks = dialogue
         artifact = StudyArtifact(notebook_id=notebook_id, kind=body.kind, blocks=blocks)
         session.add(artifact); session.commit()
         return artifact_json(artifact)

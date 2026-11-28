@@ -1,3 +1,4 @@
+import Podcast from "./Podcast";
 import { SharePublisher } from "./Sharing";
 import MindMap, { type StudyGraph } from "./MindMap";
 import {
@@ -61,6 +62,9 @@ type Artifact = {
   blocks: {
     heading: string;
     text: string;
+    speaker?: "host" | "reader";
+    language?: "ar" | "en";
+    origin?: string;
     year: number | null;
     reference: Citation;
   }[];
@@ -81,6 +85,7 @@ const artifactLabels: Record<string, string> = {
   briefing: "موجز اقتباسي",
   timeline: "تسلسل السنوات المذكورة",
   mindmap: "خريطة المصادر التفاعلية",
+  podcast: "حوار مراجعة صوتي اقتباسي",
 };
 function Spinner() {
   return <LoaderCircle size={16} className="spin" />;
@@ -955,6 +960,7 @@ function Artifacts({
   const { readOnly, publish } = useContext(Permissions);
   const [items, setItems] = useState<Artifact[]>([]),
     [kind, setKind] = useState("study_guide"),
+    [language, setLanguage] = useState("ar"),
     [chosen, setChosen] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -987,7 +993,7 @@ function Artifacts({
       const item = await api<Artifact>(
         base + "/study-artifacts",
         token,
-        json({ kind, source_ids: sourceIds }),
+        json({ kind, source_ids: sourceIds, language }),
       );
       await load();
       setChosen(item.id);
@@ -1016,6 +1022,18 @@ function Artifacts({
             ))}
           </select>
         </label>
+        {kind === "podcast" && (
+          <label>
+            لغة المحاور والصوت
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+            >
+              <option value="ar">العربية</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        )}
         <button
           className="primary"
           disabled={readOnly || busy || !sourceIds.length}
@@ -1046,7 +1064,13 @@ function Artifacts({
       {current ? (
         <div className="artifact-blocks">
           <h3>{artifactLabels[current.kind]}</h3>
-          {current.kind === "mindmap" && current.graph ? (
+          {current.kind === "podcast" ? (
+            <Podcast
+              key={current.id}
+              turns={current.blocks}
+              onCitation={onCitation}
+            />
+          ) : current.kind === "mindmap" && current.graph ? (
             <MindMap
               key={current.id}
               graph={current.graph}
