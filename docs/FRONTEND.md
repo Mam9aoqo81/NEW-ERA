@@ -1,4 +1,4 @@
-# KnowLM web study workspace (0.9)
+# KnowLM web study workspace (0.10)
 
 ## Scope
 
@@ -8,7 +8,7 @@ connected to the real backend; there are no fake social feeds, follower counts,
 quality badges or simulated model responses.
 
 - Registration, login, session restoration through `GET /v1/auth/me`, server logout.
-- Create/select private notebooks.
+- Create/select private notebooks; confirmed notebook deletion removes all its active database records. See [PRIVACY.md](PRIVACY.md) for retention limits.
 - Persist and restore complete question/answer/citation snapshots per notebook,
   with keyset pagination, explicit confirmed deletion and idempotent request retries.
 - Add pasted text, enqueue PDF or DOCX extraction, or ingest a YouTube link with public or explicitly attached timed captions; poll source states every 3.5 seconds.
@@ -120,11 +120,11 @@ an English photosynthesis sentence, with no third-party copyrighted content.
 
 ## Verified in this workspace
 
-- 22 frontend component/hook/integration tests.
+- 25 frontend component/hook/integration tests.
 - 8 real-browser end-to-end tests (study/PDF, YouTube manual-caption, learning/maps, and DOCX paragraph-reference flows, desktop and mobile).
 - Production build and TypeScript check.
 - npm audit: no known vulnerabilities at the time of verification.
-- Backend suite: 119 passed; one opt-in live YouTube test skipped (network restricted).
+- Backend suite: 124 passed; one opt-in live YouTube test skipped (network restricted).
 
 These checks do not establish production readiness or the quality of a live LLM
 provider. The generated-answer provider remains disabled in this preview.

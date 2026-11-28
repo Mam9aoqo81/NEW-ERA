@@ -12,13 +12,14 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
+from knowlm.database import make_engine
 from knowlm.retrieval import Evidence, retrieve
 from knowlm.generation import CitationError, ProviderError, validate_answer
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float, LargeBinary, JSON, UniqueConstraint, Index, create_engine, select, update, delete
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float, LargeBinary, JSON, UniqueConstraint, Index, select, update, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -143,12 +144,12 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     data = Path(os.getenv('KNOWLM_DATA_DIR', 'backend/data'))
     data.mkdir(parents=True, exist_ok=True)
     url = database_url or os.getenv('DATABASE_URL', f'sqlite:///{data / "knowlm.db"}')
-    engine = create_engine(url, connect_args={'check_same_thread': False} if url.startswith('sqlite') else {})
+    engine = make_engine(url)
     # Prototype only: production must use reviewed database migrations.
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.9.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.10.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     bearer = HTTPBearer(auto_error=False)
 
@@ -237,6 +238,18 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         session.add(notebook)
         session.commit()
         return {'id': notebook.id, 'title': notebook.title}
+
+    @app.delete('/v1/notebooks/{notebook_id}', status_code=204)
+    def delete_notebook(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
+        # A notebook row lock serializes competing deletions on PostgreSQL.
+        notebook = session.scalar(select(Notebook).where(Notebook.id == notebook_id, Notebook.owner_id == user_id).with_for_update())
+        if not notebook or notebook.owner_id != user_id:
+            raise HTTPException(404, 'Notebook not found')
+        from knowlm.privacy import erase_notebook
+        erase_notebook(session, notebook_id)
+        session.commit()
+        from fastapi.responses import Response
+        return Response(status_code=204)
 
     @app.get('/v1/notebooks')
     def list_notebooks(user_id=Depends(current_user), session: Session = Depends(db)):

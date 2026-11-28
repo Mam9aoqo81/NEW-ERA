@@ -11,10 +11,11 @@ import hashlib
 import os
 import time
 
-from sqlalchemy import create_engine, delete, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from knowlm.main import Chunk, IngestionJob, Source, uid
+from knowlm.database import make_engine
 from knowlm.pdf import ExtractionError, extract_pdf
 from knowlm.docx import extract_docx
 from knowlm.youtube import fetch_transcript, parse_captions, transcript_chunks
@@ -51,8 +52,13 @@ def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript, 
         if not claimed.rowcount:
             return True
         claimed_job = session.get(IngestionJob, candidate)
+        if claimed_job is None:
+            return True  # Deleted after claim commit, before payload read.
+        claimed_source = session.get(Source, claimed_job.source_id)
+        if claimed_source is None:
+            return True
         payload = claimed_job.payload
-        kind = session.get(Source, claimed_job.source_id).kind
+        kind = claimed_source.kind
     error, pages, timed_chunks = None, [], []
     try:
         if payload is None:
@@ -105,7 +111,7 @@ def main():
     parser.add_argument('--once', action='store_true', help='Process at most one job, then exit')
     args = parser.parse_args()
     directory = os.getenv('KNOWLM_DATA_DIR', 'backend/data')
-    engine = create_engine(os.getenv('DATABASE_URL', f'sqlite:///{directory}/knowlm.db'))
+    engine = make_engine(os.getenv('DATABASE_URL', f'sqlite:///{directory}/knowlm.db'))
     logging.basicConfig(level=logging.INFO)
     while True:
         worked = run_once(engine)

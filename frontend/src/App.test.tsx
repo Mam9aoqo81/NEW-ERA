@@ -22,7 +22,11 @@ function mockApi({
   notebooks = [nb],
   expired = false,
   history = [],
+  deleteFails = false,
+  deleteResponseLost = false,
 }: {
+  deleteFails?: boolean;
+  deleteResponseLost?: boolean;
   history?: unknown[];
   sources?: unknown[];
   notebooks?: (typeof nb)[];
@@ -43,6 +47,14 @@ function mockApi({
       if (path === "/v1/auth/register")
         return respond({ id: "user-1", username: "student" }, 201);
       if (path === "/v1/auth/logout") return respond(null, 204);
+      if (path === "/v1/notebooks/notebook-1" && init.method === "DELETE") {
+        if (deleteFails) return respond({ detail: "Deletion failed" }, 503);
+        if (deleteResponseLost) {
+          notebooks.splice(0);
+          throw new TypeError("Network lost after commit");
+        }
+        return respond(null, 204);
+      }
       if (path === "/v1/notebooks" && init.method === "POST")
         return respond(
           { id: "created-1", title: JSON.parse(String(init.body)).title },
@@ -226,6 +238,66 @@ describe("KnowLM study flow", () => {
       screen.getByRole("textbox", { name: "سؤالك عن المصادر" }),
     ).toBeDisabled();
     expect(screen.getByRole("button", { name: "إرسال السؤال" })).toBeDisabled();
+  });
+  it("requires the notebook title before deleting and clears the deleted workspace", async () => {
+    signedIn();
+    const { calls } = mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(
+      await screen.findByRole("button", { name: /^حذف الدفتر$/ }),
+    );
+    const confirm = screen.getByRole("button", { name: "حذف الدفتر نهائيًا" });
+    expect(confirm).toBeDisabled();
+    await user.type(
+      screen.getByLabelText("اسم الدفتر لتأكيد الحذف"),
+      "اسم خطأ",
+    );
+    expect(confirm).toBeDisabled();
+    await user.clear(screen.getByLabelText("اسم الدفتر لتأكيد الحذف"));
+    await user.type(screen.getByLabelText("اسم الدفتر لتأكيد الحذف"), nb.title);
+    await user.click(confirm);
+    await screen.findByRole("button", { name: "إنشاء أول دفتر" });
+    expect(
+      calls.filter(
+        (c) =>
+          c.path === `/v1/notebooks/${nb.id}` && c.init.method === "DELETE",
+      ),
+    ).toHaveLength(1);
+  });
+  it("cancels deletion without a request and keeps the notebook after a server failure", async () => {
+    signedIn();
+    const { calls } = mockApi({ deleteFails: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(
+      await screen.findByRole("button", { name: /^حذف الدفتر$/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "إلغاء الحذف" }));
+    expect(calls.some((c) => c.init.method === "DELETE")).toBe(false);
+    await user.click(screen.getByRole("button", { name: /^حذف الدفتر$/ }));
+    await user.type(screen.getByLabelText("اسم الدفتر لتأكيد الحذف"), nb.title);
+    await user.click(screen.getByRole("button", { name: "حذف الدفتر نهائيًا" }));
+    await screen.findByRole("alert");
+    expect(
+      screen.getByRole("heading", { level: 1, name: nb.title }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "حذف الدفتر نهائيًا" }),
+    ).toBeEnabled();
+  });
+  it("reconciles a deletion whose response was lost after the server committed", async () => {
+    signedIn();
+    mockApi({ deleteResponseLost: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(
+      await screen.findByRole("button", { name: /^حذف الدفتر$/ }),
+    );
+    await user.type(screen.getByLabelText("اسم الدفتر لتأكيد الحذف"), nb.title);
+    await user.click(screen.getByRole("button", { name: "حذف الدفتر نهائيًا" }));
+    await screen.findByRole("button", { name: "إنشاء أول دفتر" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
   it("uploads a PDF through the background-job endpoint", async () => {
     signedIn();

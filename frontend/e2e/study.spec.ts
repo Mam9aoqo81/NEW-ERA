@@ -359,4 +359,24 @@ test("Word upload → private paragraph reference → persisted answer", async (
   await expect(
     page.getByRole("button", { name: /biology.docx.*فقرة 2/ }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "حذف الدفتر", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "حذف الدفتر نهائيًا", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "إلغاء الحذف" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "دراسة مستند Word" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "حذف الدفتر", exact: true }).click();
+  await page.getByLabel("اسم الدفتر لتأكيد الحذف").fill("دراسة مستند Word");
+  await page
+    .getByRole("button", { name: "حذف الدفتر نهائيًا", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "إنشاء أول دفتر" }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "إنشاء أول دفتر" }),
+  ).toBeVisible({ timeout: 20000 });
 });

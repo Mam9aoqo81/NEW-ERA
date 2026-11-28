@@ -523,6 +523,11 @@ export default function App() {
             notebook={selected}
             token={token}
             llm={llm}
+            onDeleted={() => {
+              const remaining = notebooks.filter((n) => n.id !== selected.id);
+              setNotebooks(remaining);
+              setSelected(remaining[0] || null);
+            }}
           />
         ) : (
           <div className="welcome">
@@ -634,10 +639,12 @@ function Workspace({
   notebook,
   token,
   llm,
+  onDeleted,
 }: {
   notebook: Notebook;
   token: string;
   llm: boolean;
+  onDeleted: () => void;
 }) {
   const [sources, setSources] = useState<Source[]>([]),
     [selected, setSelected] = useState<string[]>([]),
@@ -650,7 +657,11 @@ function Workspace({
     [citation, setCitation] = useState<Citation | null>(null),
     [tab, setTab] = useState<"chat" | "sources">("chat"),
     [sampleBusy, setSampleBusy] = useState(false),
-    [toolsOpen, setToolsOpen] = useState(false);
+    [toolsOpen, setToolsOpen] = useState(false),
+    [confirmDelete, setConfirmDelete] = useState(false),
+    [deleteTitle, setDeleteTitle] = useState(""),
+    [deleting, setDeleting] = useState(false),
+    [deleteError, setDeleteError] = useState("");
   const seen = useRef(new Set<string>()),
     refreshVersion = useRef(0),
     end = useRef<HTMLDivElement>(null),
@@ -762,6 +773,18 @@ function Workspace({
           </div>
         </div>
         <div className="notebook-heading-actions">
+          <button
+            className="icon-button"
+            aria-label="حذف الدفتر"
+            title="حذف الدفتر"
+            onClick={() => {
+              setDeleteTitle("");
+              setDeleteError("");
+              setConfirmDelete(true);
+            }}
+          >
+            <Trash2 size={18} />
+          </button>
           <button
             className="outline tools-open-button"
             aria-pressed={toolsOpen}
@@ -1231,6 +1254,81 @@ function Workspace({
           </div>
         </section>
       </div>
+      {confirmDelete && (
+        <Modal
+          title="حذف الدفتر وكل بياناته؟"
+          close={() => {
+            if (!deleting) setConfirmDelete(false);
+          }}
+        >
+          <p className="muted">
+            سيُحذف هذا الدفتر ومصادره وملفاته المحفوظة ومحادثاته وبطاقاته
+            ومراجعاته واختباراته ونتائجه وخرائطه من قاعدة البيانات النشطة. لا
+            يمكن التراجع. لا يحذف ذلك نسخًا احتياطية أو بيانات سبق إرسالها لخدمة
+            خارجية.
+          </p>
+          <p className="field-hint">
+            لن يستطيع عامل المعالجة إعادة نشر مصادر هذا الدفتر بعد الحذف. أي طلب
+            خارجي بدأ بالفعل قد يستمر عند مزوّده.
+          </p>
+          <label>
+            اكتب اسم الدفتر للتأكيد: {notebook.title}
+            <input
+              aria-label="اسم الدفتر لتأكيد الحذف"
+              value={deleteTitle}
+              onChange={(e) => setDeleteTitle(e.target.value)}
+              disabled={deleting}
+              autoComplete="off"
+            />
+          </label>
+          {deleteError && (
+            <p className="error" role="alert">
+              {deleteError}
+            </p>
+          )}
+          <div className="confirm-actions">
+            <button
+              className="outline"
+              disabled={deleting}
+              onClick={() => setConfirmDelete(false)}
+            >
+              إلغاء الحذف
+            </button>
+            <button
+              className="danger"
+              disabled={deleting || deleteTitle !== notebook.title}
+              onClick={async () => {
+                setDeleting(true);
+                setDeleteError("");
+                try {
+                  await api(`/v1/notebooks/${notebook.id}`, token, {
+                    method: "DELETE",
+                  });
+                  onDeleted();
+                } catch (e) {
+                  // A lost DELETE response must not leave a removed notebook open.
+                  try {
+                    const remaining = await api<Notebook[]>(
+                      "/v1/notebooks",
+                      token,
+                    );
+                    if (!remaining.some((n) => n.id === notebook.id)) {
+                      onDeleted();
+                      return;
+                    }
+                  } catch {
+                    /* Preserve the original failure if status cannot be confirmed. */
+                  }
+                  setDeleteError(errorMessage(e));
+                  setDeleting(false);
+                }
+              }}
+            >
+              {deleting ? <Busy /> : <Trash2 size={16} />} حذف الدفتر نهائيًا
+            </button>
+          </div>
+        </Modal>
+      )}
       {confirmClear && (
         <Modal
           title="مسح محادثة الدفتر؟"
