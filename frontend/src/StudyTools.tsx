@@ -1,3 +1,4 @@
+import ServerAudio from "./ServerAudio";
 import Podcast from "./Podcast";
 import { SharePublisher } from "./Sharing";
 import MindMap, { type StudyGraph } from "./MindMap";
@@ -1065,11 +1066,20 @@ function Artifacts({
         <div className="artifact-blocks">
           <h3>{artifactLabels[current.kind]}</h3>
           {current.kind === "podcast" ? (
-            <Podcast
-              key={current.id}
-              turns={current.blocks}
-              onCitation={onCitation}
-            />
+            <>
+              <Podcast
+                key={current.id}
+                turns={current.blocks}
+                onCitation={onCitation}
+              />
+              {publish && (
+                <ServerAudio
+                  key={`audio:${current.id}`}
+                  artifactId={current.id}
+                  token={token}
+                />
+              )}
+            </>
           ) : current.kind === "mindmap" && current.graph ? (
             <MindMap
               key={current.id}

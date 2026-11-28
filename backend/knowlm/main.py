@@ -148,7 +148,8 @@ def password_hash(password, salt=None):
     return f'{salt}:{digest}'
 
 
-def create_app(database_url=None, *, initialize_schema=True, answer_provider=None, embedding_provider=None):
+def create_app(database_url=None, *, initialize_schema=True, answer_provider=None, embedding_provider=None, speech_provider=None):
+    from knowlm.audio import register_audio
     from knowlm.canvas import register_canvas
     from knowlm.community import register_community
     from knowlm.collaboration import Membership, access, register_collaboration
@@ -164,7 +165,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.19.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.20.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
@@ -614,6 +615,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 'citations': citations, 'retrieval': retrieval_mode,
                 'notice': 'مقتطفات بحث دلالي تجريبي؛ التشابه لا يثبت دعم الإجابة أو صحة الادعاءات.' if body.semantic_consent else 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
+    register_audio(app, db, current_user, owned, speech_provider)
     register_canvas(app, db, current_user, readable)
     register_community(app, db, current_user, owned)
     register_collaboration(app, db, current_user, owned)

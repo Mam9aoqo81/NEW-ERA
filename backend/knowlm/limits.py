@@ -27,6 +27,7 @@ class RateBucket(Base):
 class Limits:
     auth: int = 60
     mutations: int = 120
+    audio: int = 3
     ask: int = 30
     ingestion: int = 10
     account_delete: int = 5
@@ -36,7 +37,7 @@ class Limits:
 
     @classmethod
     def from_env(cls):
-        names = {'auth':'AUTH_PER_MINUTE','mutations':'MUTATIONS_PER_MINUTE','ask':'ASK_PER_MINUTE',
+        names = {'audio':'AUDIO_PER_MINUTE','auth':'AUTH_PER_MINUTE','mutations':'MUTATIONS_PER_MINUTE','ask':'ASK_PER_MINUTE',
                  'ingestion':'INGESTION_PER_MINUTE','account_delete':'ACCOUNT_DELETE_PER_MINUTE',
                  'notebooks':'MAX_NOTEBOOKS','sources':'MAX_SOURCES_PER_NOTEBOOK',
                  'active_jobs':'MAX_ACTIVE_JOBS_PER_NOTEBOOK'}
@@ -75,6 +76,8 @@ class RateLimiter:
             return None
         if path in ('/v1/auth/login','/v1/auth/register'):
             scope = 'auth'
+        elif re.fullmatch(r'/v1/study-artifacts/[^/]+/audio', path):
+            scope = 'audio'
         elif path == '/v1/auth/delete-account':
             scope = 'account_delete'
         elif re.fullmatch(r'/v1/notebooks/[^/]+/ask',path):
