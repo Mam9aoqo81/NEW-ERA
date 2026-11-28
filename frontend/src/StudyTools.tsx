@@ -1076,6 +1076,8 @@ function Artifacts({
                 <ServerAudio
                   key={`audio:${current.id}`}
                   artifactId={current.id}
+                  turns={current.blocks}
+                  onCitation={onCitation}
                   token={token}
                 />
               )}

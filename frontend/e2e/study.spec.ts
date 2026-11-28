@@ -1426,3 +1426,111 @@ test("source-selected review dialogue persists with private citations and downlo
   });
   await page.request.delete(`/v1/notebooks/${nid}`, { headers });
 });
+
+test("WAV player decodes fixture, seeks by measured cue, downloads once and pauses for citation", async ({
+  page,
+}, info) => {
+  const username = `wav_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  await page.request.post("/v1/auth/register", {
+    data: { username, password },
+  });
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر توقيت الصوت" },
+      })
+    ).json()
+  ).id;
+  await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: {
+      title: "مرجع الملف الصوتي",
+      text: "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.",
+    },
+  });
+  const artifact = await (
+    await page.request.post(`/v1/notebooks/${nid}/study-artifacts`, {
+      headers,
+      data: { kind: "podcast" },
+    })
+  ).json();
+  // Actual decodable PCM fixture, NOT synthesized speech or a live TTS claim.
+  const wav = Buffer.alloc(44 + 32000);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24);
+  wav.writeUInt32LE(16000, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(32000, 40);
+  let generations = 0;
+  await page.route("**/v1/audio/config", (route) =>
+    route.fulfill({ json: { enabled: true } }),
+  );
+  await page.route(`**/v1/study-artifacts/${artifact.id}/audio`, (route) => {
+    generations++;
+    return route.fulfill({
+      body: wav,
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-KnowLM-Audio-Cues": JSON.stringify([
+          { index: 0, start: 0, end: 1 },
+          { index: 1, start: 1, end: 2 },
+        ]),
+      },
+    });
+  });
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  const region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
+  await region.getByRole("checkbox").check();
+  await region.getByRole("button", { name: "توليد ملف WAV" }).click();
+  const audio = region.getByLabel("مشغل ملف الحوار");
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.duration))
+    .toBe(2);
+  expect(await audio.evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
+  await region.getByRole("button", { name: /انتقل للمقطع 2/ }).click();
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.currentTime))
+    .toBe(1);
+  await audio.evaluate((el: HTMLAudioElement) => el.play());
+  await region
+    .getByRole("button", { name: "فتح مرجع الصوت 2", exact: true })
+    .click();
+  expect(await audio.evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await region.getByRole("link", { name: "تنزيل ملف WAV" }).click();
+  expect((await download).suggestedFilename()).toBe("knowlm-review.wav");
+  expect(generations).toBe(1);
+  await region.screenshot({
+    path: `../backend/data/wav-player-${info.project.name}.png`,
+  });
+  await region.getByRole("button", { name: "مسح الصوت المؤقت" }).click();
+  await expect(audio).toHaveCount(0);
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});

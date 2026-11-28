@@ -1,5 +1,6 @@
 """Optional consented TTS of saved podcast turns. No arbitrary client text or URLs."""
 import io
+import json
 import os
 import struct
 import time
@@ -75,11 +76,12 @@ def speech_provider_from_env():
     return SpeechProvider(os.getenv('KNOWLM_TTS_BASE_URL', 'https://api.openai.com/v1'), *values)
 
 
-def render_dialogue(provider, blocks):
+def render_dialogue(provider, blocks, *, include_cues=False):
     if not blocks or len(blocks) > 20 or sum(len(b['text']) for b in blocks) > 8000:
         raise AudioError('Dialogue exceeds audio limits')
     started = time.monotonic()
     parts, expected, total = [], None, 0
+    cues = []
     for block in blocks:
         remaining = 90 - (time.monotonic() - started)
         if remaining <= 0:
@@ -90,6 +92,8 @@ def render_dialogue(provider, blocks):
         if expected and params != expected:
             raise AudioError('Incompatible speech formats')
         expected = params
+        bytes_per_second = params[0] * params[1] * params[2]
+        cues.append({'index': len(cues), 'start': total / bytes_per_second, 'end': (total + len(data)) / bytes_per_second})
         total += len(data)
         if total > MAX_BYTES - 100 or total / (params[0] * params[1] * params[2]) > 600:
             raise AudioError('Combined audio exceeds limits')
@@ -99,7 +103,7 @@ def render_dialogue(provider, blocks):
         wav.setnchannels(expected[0]); wav.setsampwidth(expected[1]); wav.setframerate(expected[2])
         for part in parts:
             wav.writeframesraw(part)
-    return output.getvalue()
+    return (output.getvalue(), cues) if include_cues else output.getvalue()
 
 
 class AudioInput(BaseModel):
@@ -128,7 +132,7 @@ def register_audio(app, db, current_user, owned, provider):
         # Never hold a notebook write lock during an external request.
         session.rollback()
         try:
-            raw = render_dialogue(provider, original)
+            raw, cues = render_dialogue(provider, original, include_cues=True)
         except AudioError:
             raise HTTPException(502, 'Speech service failed or returned unsupported audio') from None
         # Account/notebook deletion or changed content prevents returning a stale result.
@@ -137,4 +141,4 @@ def register_audio(app, db, current_user, owned, provider):
         fresh = session.get(StudyArtifact, artifact_id, populate_existing=True)
         if not fresh or fresh.blocks != original:
             raise HTTPException(409, 'Study output changed during speech generation')
-        return Response(raw, media_type='audio/wav', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="knowlm-review.wav"', 'X-Content-Type-Options': 'nosniff'})
+        return Response(raw, media_type='audio/wav', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="knowlm-review.wav"', 'X-Content-Type-Options': 'nosniff', 'X-KnowLM-Audio-Cues': json.dumps(cues, separators=(',', ':'))})

@@ -68,6 +68,10 @@ def test_audio_authorization_consent_and_valid_download(tmp_path):
         assert response.status_code==200,response.text
         assert response.headers['content-type']=='audio/wav'
         assert response.headers['cache-control']=='no-store'
+        import json
+        cues=json.loads(response.headers['x-knowlm-audio-cues'])
+        assert len(cues)==len(artifact['blocks'])
+        assert cues[0]['start']==0 and cues[-1]['end']==0.01*len(cues)
         assert len(provider.calls)==len(artifact['blocks'])
         assert pcm(response.content)[0]==(1,2,8000)
         assert client.post(url,headers=owner,json={'consent':True}).status_code==429
@@ -92,3 +96,11 @@ def test_deleted_notebook_cannot_return_inflight_audio(tmp_path):
         artifact=client.post(f'/v1/notebooks/{nid}/study-artifacts',headers=owner,json={'kind':'podcast'}).json()
         assert client.post(f'/v1/study-artifacts/{artifact["id"]}/audio',headers=owner,json={'consent':True}).status_code==404
     app.state.engine.dispose()
+
+
+def test_cues_are_measured_from_pcm_frames_not_estimated_text_length():
+    provider=FakeSpeech()
+    raw,cues=render_dialogue(provider,[{'text':'long text'*100,'speaker':'host'},{'text':'b','speaker':'reader'}],include_cues=True)
+    assert cues==[{'index':0,'start':0,'end':0.01},{'index':1,'start':0.01,'end':0.02}]
+    with wave.open(io.BytesIO(raw),'rb') as f:
+        assert cues[-1]['end']==f.getnframes()/f.getframerate()

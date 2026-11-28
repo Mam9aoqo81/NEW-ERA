@@ -59,6 +59,13 @@ export default function Podcast({
     setPlaying(false);
     setPaused(false);
   }
+  useEffect(() => {
+    function otherAudio(event: Event) {
+      if ((event as CustomEvent).detail !== "browser") stop();
+    }
+    window.addEventListener("knowlm-audio-start", otherAudio);
+    return () => window.removeEventListener("knowlm-audio-start", otherAudio);
+  }, [supported]);
   function speak(at: number, id: number) {
     if (id !== generation.current) return;
     if (at >= turns.length) {
@@ -92,6 +99,9 @@ export default function Podcast({
     window.speechSynthesis.speak(utterance);
   }
   function play(at = index) {
+    window.dispatchEvent(
+      new CustomEvent("knowlm-audio-start", { detail: "browser" }),
+    );
     stop();
     setError("");
     setPlaying(true);

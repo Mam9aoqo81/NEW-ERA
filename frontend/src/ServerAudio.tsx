@@ -1,19 +1,82 @@
 import { useEffect, useRef, useState } from "react";
-import { api, json } from "./api";
+import { api, json, type Citation } from "./api";
+import type { PodcastTurn } from "./Podcast";
+
+type Cue = { index: number; start: number; end: number };
+export function parseAudioCues(raw: string | null, count: number): Cue[] {
+  try {
+    const cues: Cue[] = JSON.parse(raw || "null");
+    if (
+      !Array.isArray(cues) ||
+      cues.length !== count ||
+      cues.length > 20 ||
+      !cues.length
+    )
+      return [];
+    let end = 0;
+    for (let i = 0; i < cues.length; i++) {
+      const cue = cues[i];
+      if (
+        !cue ||
+        cue.index !== i ||
+        !Number.isFinite(cue.start) ||
+        !Number.isFinite(cue.end) ||
+        Math.abs(cue.start - end) > 0.000001 ||
+        cue.end <= cue.start ||
+        cue.end > 600
+      )
+        return [];
+      end = cue.end;
+    }
+    return cues;
+  } catch {
+    return [];
+  }
+}
+function timestamp(seconds: number) {
+  return `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, "0")}`;
+}
 
 export default function ServerAudio({
   artifactId,
   token,
+  turns = [],
+  onCitation,
 }: {
   artifactId: string;
   token: string;
+  turns?: PodcastTurn[];
+  onCitation?: (reference: Citation) => void;
 }) {
   const request = useRef<AbortController | null>(null);
-  useEffect(() => () => request.current?.abort(), []);
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const objectUrl = useRef<string | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [url, setUrl] = useState("");
+  const [cues, setCues] = useState<Cue[]>([]);
+  const [position, setPosition] = useState(0);
+  useEffect(() => {
+    const player = audio.current;
+    return () => {
+      player?.pause();
+    };
+  }, [url]);
+  useEffect(() => {
+    function otherAudio(event: Event) {
+      if ((event as CustomEvent).detail !== "server") audio.current?.pause();
+    }
+    window.addEventListener("knowlm-audio-start", otherAudio);
+    return () => {
+      request.current?.abort();
+      if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+      window.removeEventListener("knowlm-audio-start", otherAudio);
+    };
+  }, []);
   useEffect(() => {
     const c = new AbortController();
     api<{ enabled: boolean }>("/v1/audio/config", token, { signal: c.signal })
@@ -24,7 +87,18 @@ export default function ServerAudio({
       });
     return () => c.abort();
   }, [token]);
+  function clear() {
+    request.current?.abort();
+    audio.current?.pause();
+    if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+    objectUrl.current = null;
+    setUrl("");
+    setCues([]);
+    setPosition(0);
+    setBusy(false);
+  }
   async function generate() {
+    if (request.current && busy) return;
     const controller = new AbortController();
     request.current = controller;
     setBusy(true);
@@ -44,21 +118,38 @@ export default function ServerAudio({
             ? "تجاوزت حد توليد الصوت. انتظر دقيقة قبل المحاولة."
             : "تعذر توليد الملف الصوتي. تحقق من الجلسة وإعداد المزود؛ لن تُعاد المحاولة تلقائيًا.",
         );
+      if (
+        !response.headers
+          .get("Content-Type")
+          ?.toLowerCase()
+          .startsWith("audio/wav")
+      )
+        throw new Error("صيغة الملف الصوتي غير مدعومة.");
+      const markers = parseAudioCues(
+        response.headers.get("X-KnowLM-Audio-Cues"),
+        turns.length,
+      );
       const blob = await response.blob();
       if (controller.signal.aborted) return;
-      const url = URL.createObjectURL(blob),
-        link = document.createElement("a");
-      link.href = url;
-      link.download = "knowlm-review.wav";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (!blob.size || blob.size > 16_000_000)
+        throw new Error("حجم الملف الصوتي غير صالح.");
+      const nextUrl = URL.createObjectURL(blob);
+      if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
+      objectUrl.current = nextUrl;
+      setUrl(nextUrl);
+      setCues(markers);
+      setPosition(0);
     } catch (e) {
-      if (controller.signal.aborted) return;
-      setError(e instanceof Error ? e.message : "تعذر تنزيل الصوت");
+      if (!controller.signal.aborted)
+        setError(e instanceof Error ? e.message : "تعذر تنزيل الصوت");
     } finally {
-      setBusy(false);
+      if (request.current === controller) setBusy(false);
     }
   }
+  const active = cues.findIndex(
+    (c, i) =>
+      position >= c.start && (position < c.end || i === cues.length - 1),
+  );
   return (
     <section aria-label="تنزيل صوت الحوار">
       <h4>ملف صوتي WAV</h4>
@@ -68,8 +159,8 @@ export default function ServerAudio({
         <>
           <p>
             التوليد يرسل نص الحوار إلى مزود الصوت الذي يحدده المشغل، وقد تترتب
-            عليه تكلفة. متاح لمالك الدفتر فقط، بحد 3 طلبات في الدقيقة. الملف لا
-            يُحفظ على الخادم؛ النسخة المنزلة لن تُمحى عند حذف الدفتر.
+            عليه تكلفة. متاح لمالك الدفتر فقط مع حدود للطلبات. الملف متاح هنا
+            مؤقتًا ولا يُحفظ على الخادم؛ النسخة المنزلة لن تُمحى عند حذف الدفتر.
           </p>
           <label>
             <input
@@ -82,11 +173,94 @@ export default function ServerAudio({
           </label>
           <button
             type="button"
-            disabled={!checked || busy}
+            disabled={!checked || busy || !!url}
             onClick={() => void generate()}
           >
-            {busy ? "جارٍ توليد الصوت…" : "توليد وتنزيل WAV"}
+            {busy ? "جارٍ توليد الصوت…" : "توليد ملف WAV"}
           </button>
+          {busy && (
+            <button type="button" onClick={clear}>
+              إلغاء انتظار الصوت
+            </button>
+          )}
+        </>
+      )}
+      {url && (
+        <>
+          <audio
+            ref={audio}
+            controls
+            preload="metadata"
+            src={url}
+            aria-label="مشغل ملف الحوار"
+            onPlay={() =>
+              window.dispatchEvent(
+                new CustomEvent("knowlm-audio-start", { detail: "server" }),
+              )
+            }
+            onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
+            onSeeked={(e) => setPosition(e.currentTarget.currentTime)}
+            onError={() =>
+              setError("تعذر تشغيل WAV على هذا المتصفح. يمكنك تنزيل الملف.")
+            }
+          />
+          <div className="tools-row">
+            <a href={url} download="knowlm-review.wav">
+              تنزيل ملف WAV
+            </a>
+            <button type="button" onClick={clear}>
+              مسح الصوت المؤقت
+            </button>
+          </div>
+          <p>
+            لا يبدأ التشغيل تلقائيًا. التوقيت لحدود الأدوار من عينات الملف، وليس
+            محاذاة كلمات. الملف المؤقت يختفي عند إغلاق هذا المخرج أو تحديث
+            الصفحة.
+          </p>
+          {cues.length ? (
+            <>
+              <p role="status">
+                المقطع الصوتي {Math.max(0, active) + 1} من {cues.length}
+              </p>
+              <ol aria-label="توقيت مقاطع الحوار">
+                {cues.map((cue, i) => (
+                  <li key={i} aria-current={active === i ? "step" : undefined}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (audio.current) {
+                          audio.current.pause();
+                          audio.current.currentTime = cue.start;
+                          setPosition(cue.start);
+                        }
+                      }}
+                    >
+                      انتقل للمقطع {i + 1} ·{" "}
+                      <bdi>
+                        {timestamp(cue.start)}–{timestamp(cue.end)}
+                      </bdi>{" "}
+                      · {turns[i].heading}
+                    </button>
+                    {onCitation && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          audio.current?.pause();
+                          onCitation(turns[i].reference);
+                        }}
+                      >
+                        فتح مرجع الصوت {i + 1}
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : (
+            <p>
+              لا توجد علامات توقيت صالحة؛ مشغل الملف والتنزيل ما زالا متاحين.
+            </p>
+          )}
         </>
       )}
       {error && <p role="alert">{error}</p>}
