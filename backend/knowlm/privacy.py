@@ -12,7 +12,9 @@ from knowlm.learning import Card, Deck, Quiz, QuizAttempt, ReviewEvent, ReviewSt
 def erase_notebook(session, notebook_id):
     # Serialize snapshot publication against parent erasure before deleting children.
     session.execute(update(Notebook).where(Notebook.id == notebook_id).values(title=Notebook.title))
-    from knowlm.sharing import LearningShare
+    from knowlm.sharing import LearningShare, ShareImport, ShareReport
+    session.execute(delete(ShareImport).where(ShareImport.notebook_id == notebook_id).execution_options(synchronize_session=False))
+    session.execute(delete(ShareReport).where(ShareReport.share_id.in_(select(LearningShare.id).where(LearningShare.notebook_id == notebook_id))).execution_options(synchronize_session=False))
     session.execute(delete(LearningShare).where(LearningShare.notebook_id == notebook_id).execution_options(synchronize_session=False))
     sources = select(Source.id).where(Source.notebook_id == notebook_id)
     decks = select(Deck.id).where(Deck.notebook_id == notebook_id)
@@ -45,6 +47,8 @@ def erase_account(session, user_id):
     for notebook_id in notebook_ids:
         erase_notebook(session, notebook_id)
     # Also remove this user's own activity should shared notebooks be added later.
+    from knowlm.sharing import ShareReport
+    session.execute(delete(ShareReport).where(ShareReport.reporter_id == user_id).execution_options(synchronize_session=False))
     from knowlm.limits import RateBucket
     for model in (QuizAttempt, ReviewEvent, ReviewState, AuthSession, RateBucket):
         session.execute(delete(model).where(model.user_id == user_id).execution_options(synchronize_session=False))

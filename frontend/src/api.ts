@@ -37,6 +37,13 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Explicit import consent is required":
+    "أكد فهمك لطبيعة النسخة وحقك في حفظها أولًا.",
+  "Only shared cards can be imported":
+    "الحفظ في المكتبة متاح للبطاقات فقط حاليًا.",
+  "Import request ID already used":
+    "استُخدم طلب الحفظ لنسخة أخرى. أعد فتح الرابط.",
+  "Pending report quota reached": "وصلت للحد الأقصى للبلاغات قيد المراجعة.",
   "Select sources explicitly for semantic retrieval":
     "حدد المصادر صراحة قبل استخدام البحث الدلالي.",
   "Semantic retrieval is not configured":

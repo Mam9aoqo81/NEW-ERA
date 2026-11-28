@@ -68,6 +68,7 @@ type Artifact = {
 const message = (e: unknown) =>
   e instanceof Error ? e.message : "تعذّر إكمال العملية.";
 const labels: Record<string, string> = {
+  shared: "نسخة مشتركة · غير مدققة",
   manual: "يدوية",
   extractive: "حذف كلمة من المصدر",
   edited: "معدّلة يدويًا",

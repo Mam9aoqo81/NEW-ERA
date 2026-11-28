@@ -4,10 +4,12 @@ import hashlib
 import json
 import re
 import secrets
+import uuid
+from typing import Literal
 
 from fastapi import Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
-from sqlalchemy import DateTime, ForeignKey, JSON, String, func, select, update
+from sqlalchemy import DateTime, ForeignKey, JSON, String, UniqueConstraint, func, select, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from knowlm.main import Base, Notebook, User, uid
@@ -29,6 +31,40 @@ class LearningShare(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ShareImport(Base):
+    __tablename__ = 'share_imports'
+    __table_args__ = (UniqueConstraint('user_id', 'request_id', name='uq_share_import_request'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    notebook_id: Mapped[str] = mapped_column(ForeignKey('notebooks.id'), index=True)
+    deck_id: Mapped[str] = mapped_column(ForeignKey('flashcard_decks.id'))
+    request_id: Mapped[str] = mapped_column(String(36))
+    token_hash: Mapped[str] = mapped_column(String(64))
+
+
+class ShareReport(Base):
+    __tablename__ = 'share_reports'
+    __table_args__ = (UniqueConstraint('reporter_id', 'share_id', name='uq_share_report_user'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    reporter_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    share_id: Mapped[str] = mapped_column(ForeignKey('learning_shares.id'), index=True)
+    reason: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(20), default='pending', index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ImportInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: uuid.UUID
+    consent: StrictBool
+
+
+class ReportInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reason: Literal['privacy', 'copyright', 'harmful', 'incorrect', 'spam']
 
 
 class ShareInput(BaseModel):
@@ -155,6 +191,51 @@ def register_sharing(app, db, current_user, owned):
         items=snapshot['items'] if snapshot['kind']=='cards' else [{'prompt':q['prompt'],'choices':q['choices']} for q in snapshot['items']]
         return {'title':share.title,'kind':snapshot['kind'],'items':items,'expires_at':iso(share.expires_at),
                 'notice':'Unlisted owner-published copy. Private citations removed; not fact-checked.'}
+
+    @app.post('/v1/shared/import', status_code=201)
+    def import_cards(body:ImportInput,x_knowlm_share:str|None=Header(default=None),
+                     user_id=Depends(current_user),session:Session=Depends(db)):
+        if not body.consent: raise HTTPException(422,'Explicit import consent is required')
+        if not x_knowlm_share or not re.fullmatch(r'[A-Za-z0-9_-]{43}',x_knowlm_share):
+            raise HTTPException(404,'Shared content is unavailable')
+        token_hash=hashlib.sha256(x_knowlm_share.encode()).hexdigest()
+        # Serialize idempotency and notebook quota for this importer.
+        session.execute(update(User).where(User.id==user_id).values(username=User.username))
+        previous=session.scalar(select(ShareImport).where(ShareImport.user_id==user_id,ShareImport.request_id==str(body.request_id)))
+        if previous:
+            if previous.token_hash!=token_hash: raise HTTPException(409,'Import request ID already used')
+            return {'notebook_id':previous.notebook_id,'deck_id':previous.deck_id}
+        share=shared(x_knowlm_share,session)
+        if share.snapshot['kind']!='cards': raise HTTPException(422,'Only shared cards can be imported')
+        # Lock against revocation/deletion; read again after acquiring the lock.
+        session.execute(update(LearningShare).where(LearningShare.id==share.id).values(title=LearningShare.title))
+        session.expire_all()
+        share=shared(x_knowlm_share,session)
+        from knowlm.limits import Limits, quota_notebook
+        quota_notebook(session,user_id,Limits.from_env())
+        notebook=Notebook(owner_id=user_id,title=('نسخة مشتركة · '+share.title)[:200])
+        session.add(notebook);session.flush()
+        deck=Deck(notebook_id=notebook.id,title=share.title)
+        session.add(deck);session.flush()
+        for item in share.snapshot['items']:
+            session.add(Card(deck_id=deck.id,front=item['front'],back=item['back'],origin='shared',reference=None))
+        session.add(ShareImport(user_id=user_id,notebook_id=notebook.id,deck_id=deck.id,
+                                request_id=str(body.request_id),token_hash=token_hash))
+        session.commit()
+        return {'notebook_id':notebook.id,'deck_id':deck.id}
+
+    @app.post('/v1/shared/report', status_code=202)
+    def report(body:ReportInput,x_knowlm_share:str|None=Header(default=None),
+               user_id=Depends(current_user),session:Session=Depends(db)):
+        session.execute(update(User).where(User.id==user_id).values(username=User.username))
+        share=shared(x_knowlm_share,session)
+        previous=session.scalar(select(ShareReport).where(ShareReport.reporter_id==user_id,ShareReport.share_id==share.id))
+        if not previous:
+            pending=session.scalar(select(func.count()).select_from(ShareReport).where(ShareReport.reporter_id==user_id,ShareReport.status=='pending'))
+            if pending>=20: raise HTTPException(409,'Pending report quota reached')
+            session.add(ShareReport(reporter_id=user_id,share_id=share.id,reason=body.reason))
+            session.commit()
+        return {'status':'received'}
 
     @app.post('/v1/shared/grade')
     def grade(body:SharedAnswers,x_knowlm_share:str|None=Header(default=None),session:Session=Depends(db)):

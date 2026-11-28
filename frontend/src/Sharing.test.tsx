@@ -12,6 +12,7 @@ function response(body: unknown, status = 200) {
 }
 afterEach(() => {
   vi.unstubAllGlobals();
+  sessionStorage.clear();
   window.history.replaceState({}, "", "/");
 });
 describe("explicit learning sharing", () => {
@@ -195,4 +196,82 @@ describe("explicit learning sharing", () => {
     );
     expect(submitted).toEqual({ answers: [0, 0] });
   });
+});
+
+it("requires import consent, uses the session only for actions and reuses the request ID on retry", async () => {
+  window.history.replaceState({}, "", `/share#${token}`);
+  sessionStorage.setItem("knowlm-token", "importer-session");
+  const requests: { path: string; init: RequestInit }[] = [];
+  let fail = true;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: unknown, init: RequestInit = {}) => {
+      const path = String(input);
+      requests.push({ path, init });
+      if (path.endsWith("/view"))
+        return response({
+          kind: "cards",
+          title: "نسخة",
+          expires_at: expiry,
+          items: [{ front: "سؤال", back: "جواب" }],
+        });
+      if (path.endsWith("/import")) {
+        if (fail) throw new TypeError("lost response");
+        return response({ notebook_id: "copy", deck_id: "copy-deck" }, 201);
+      }
+      throw new Error(path);
+    }),
+  );
+  const user = userEvent.setup();
+  render(<SharedLearning />);
+  await screen.findByRole("heading", { name: "نسخة" });
+  const save = screen.getByRole("button", { name: "حفظ البطاقات في مكتبتي" });
+  expect(save).toBeDisabled();
+  await user.click(screen.getByRole("checkbox", { name: /أفهم أنها نسخة/ }));
+  await user.click(save);
+  await screen.findByRole("alert");
+  const first = requests.find((r) => r.path.endsWith("/import"))!;
+  expect(new Headers(first.init.headers).get("Authorization")).toBe(
+    "Bearer importer-session",
+  );
+  expect(new Headers(first.init.headers).get("X-KnowLM-Share")).toBe(token);
+  expect(JSON.parse(String(first.init.body)).consent).toBe(true);
+  fail = false;
+  await user.click(save);
+  expect(await screen.findByText(/حُفظت نسخة مستقلة/)).toBeVisible();
+  const imports = requests.filter((r) => r.path.endsWith("/import"));
+  expect(imports[0].init.body).toBe(imports[1].init.body);
+  expect(new Headers(requests[0].init.headers).get("Authorization")).toBeNull();
+});
+
+it("reports only an enumerated reason and never claims automatic removal", async () => {
+  window.history.replaceState({}, "", `/share#${token}`);
+  sessionStorage.setItem("knowlm-token", "reporter-session");
+  let report: RequestInit | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: unknown, init: RequestInit = {}) => {
+      if (String(input).endsWith("/view"))
+        return response({
+          kind: "cards",
+          title: "نسخة",
+          expires_at: expiry,
+          items: [{ front: "سؤال", back: "جواب" }],
+        });
+      report = init;
+      return response({ status: "received" }, 202);
+    }),
+  );
+  const user = userEvent.setup();
+  render(<SharedLearning />);
+  await screen.findByRole("heading", { name: "نسخة" });
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "سبب الإبلاغ" }),
+    "copyright",
+  );
+  await user.click(screen.getByRole("button", { name: "إرسال بلاغ للمراجعة" }));
+  expect(
+    await screen.findByText(/استُلم البلاغ للمراجعة البشرية/),
+  ).toHaveTextContent("لا يعني ذلك تعطيل الرابط");
+  expect(JSON.parse(String(report!.body))).toEqual({ reason: "copyright" });
 });

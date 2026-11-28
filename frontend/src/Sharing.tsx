@@ -105,7 +105,8 @@ export function SharePublisher({
             أي شخص يحمل الرابط يستطيع قراءة النص ونسخه دون حساب. تُحذف المراجع
             وروابط المصادر وأسماء ملفاتها آليًا، لكن السؤال أو الإجابة قد يكشفان
             معلومات خاصة بنفسيهما. راجع كل النص، ولا تنشر ما لا تملك حق مشاركته.
-            هذه ليست مشاركة للدفتر أو ختم تحقق.
+            هذه ليست مشاركة للدفتر أو ختم تحقق. يستطيع المستلم حفظ نسخة مستقلة
+            من البطاقات؛ إلغاء الرابط لا يسحب النسخ المحفوظة.
           </p>
           {error && (
             <p className="error" role="alert">
@@ -273,6 +274,117 @@ type Grade = {
   total: number;
   questions: { correct: boolean; correct_index: number; explanation: string }[];
 };
+function SharedActions({ token, kind }: { token: string; kind: string }) {
+  const [session] = useState(() => sessionStorage.getItem("knowlm-token"));
+  const [consent, setConsent] = useState(false),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [imported, setImported] = useState(false),
+    [reported, setReported] = useState(false),
+    [reason, setReason] = useState("privacy"),
+    [requestId] = useState(() => crypto.randomUUID());
+  async function act(action: "import" | "report") {
+    if (!session || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/v1/shared/${action}`, session, {
+        ...json(
+          action === "import" ? { consent, request_id: requestId } : { reason },
+        ),
+        headers: { "X-KnowLM-Share": token },
+      });
+      if (action === "import") setImported(true);
+      else setReported(true);
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="sharing-box" aria-label="حفظ وإبلاغ">
+      <h2>الحفظ والإبلاغ</h2>
+      {!session ? (
+        <p>
+          لحفظ نسخة أو إرسال بلاغ، افتح مساحة الدراسة وسجّل الدخول، ثم افتح هذا
+          الرابط مجددًا في نفس علامة التبويب.
+        </p>
+      ) : (
+        <>
+          {kind === "cards" &&
+            (imported ? (
+              <p role="status">
+                حُفظت نسخة مستقلة في دفتر جديد بمكتبتك. يمكنك تعديلها ومراجعتها
+                من مساحة الدراسة.
+              </p>
+            ) : (
+              <>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={consent}
+                    onChange={(e) => setConsent(e.target.checked)}
+                    disabled={busy}
+                  />
+                  أفهم أنها نسخة غير مدققة بلا مراجع خاصة، وأملك حق حفظها. ستبقى
+                  بمكتبتي حتى لو أُلغي الرابط الأصلي، ولن تتزامن تعديلاتها.
+                </label>
+                <button
+                  className="primary"
+                  disabled={busy || !consent}
+                  onClick={() => void act("import")}
+                >
+                  حفظ البطاقات في مكتبتي
+                </button>
+              </>
+            ))}
+          {reported ? (
+            <p role="status">
+              استُلم البلاغ للمراجعة البشرية. لا يعني ذلك تعطيل الرابط أو ثبوت
+              المخالفة.
+            </p>
+          ) : (
+            <>
+              <label>
+                سبب الإبلاغ
+                <select
+                  aria-label="سبب الإبلاغ"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  disabled={busy}
+                >
+                  <option value="privacy">معلومات خاصة</option>
+                  <option value="copyright">حقوق نشر</option>
+                  <option value="harmful">محتوى ضار</option>
+                  <option value="incorrect">معلومة غير صحيحة</option>
+                  <option value="spam">محتوى مزعج</option>
+                </select>
+              </label>
+              <button
+                className="outline"
+                disabled={busy}
+                onClick={() => void act("report")}
+              >
+                إرسال بلاغ للمراجعة
+              </button>
+            </>
+          )}
+        </>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      <p className="field-hint">
+        البلاغ يرسل السبب المحدد فقط؛ لا تكتب معلومات حساسة. قد تُحذف سجلاته عند
+        حذف الحساب أو المحتوى. لا توجد مراجعة فورية مضمونة.
+      </p>
+    </section>
+  );
+}
+
 export default function SharedLearning() {
   const [token, setToken] = useState(() => window.location.hash.slice(1)),
     [data, setData] = useState<SharedView | null>(null),
@@ -370,6 +482,7 @@ export default function SharedLearning() {
       {data && (
         <>
           <h1>{data.title}</h1>
+          <SharedActions key={token} token={token} kind={data.kind} />
           <p className="field-hint">
             الصلاحية حتى {new Date(data.expires_at).toLocaleString("ar-EG")}
           </p>

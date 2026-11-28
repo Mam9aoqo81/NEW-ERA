@@ -676,3 +676,111 @@ test("consented card and quiz links work for anonymous visitors and can be revok
     await visitor.close();
   }
 });
+
+test("recipient saves independent cards and submits a report without gaining source access", async ({
+  page,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`;
+  const password = "development-test-password";
+  async function account(username: string) {
+    expect(
+      (
+        await page.request.post("/v1/auth/register", {
+          data: { username, password },
+        })
+      ).status(),
+    ).toBe(201);
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const owner = { Authorization: `Bearer ${await account("pub_" + suffix)}` };
+  const recipientToken = await account("save_" + suffix);
+  const recipient = { Authorization: `Bearer ${recipientToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "أصل خاص" },
+      })
+    ).json()
+  ).id;
+  const deck = (
+    await (
+      await page.request.post(`/v1/notebooks/${nid}/decks`, {
+        headers: owner,
+        data: { title: "مجموعة للحفظ" },
+      })
+    ).json()
+  ).id;
+  expect(
+    (
+      await page.request.post(`/v1/decks/${deck}/cards`, {
+        headers: owner,
+        data: { front: "سؤال مستقل", back: "إجابة مستقلة" },
+      })
+    ).status(),
+  ).toBe(201);
+  const preview = await (
+    await page.request.get(`/v1/decks/${deck}/share-preview`, {
+      headers: owner,
+    })
+  ).json();
+  const share = await (
+    await page.request.post(`/v1/decks/${deck}/shares`, {
+      headers: owner,
+      data: {
+        title: "للمراجعة والحفظ",
+        consent: true,
+        preview_hash: preview.preview_hash,
+      },
+    })
+  ).json();
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    recipientToken,
+  );
+  await page.goto(`/share#${share.token}`);
+  await expect(
+    page.getByRole("heading", { name: "للمراجعة والحفظ" }),
+  ).toBeVisible();
+  const save = page.getByRole("button", { name: "حفظ البطاقات في مكتبتي" });
+  await expect(save).toBeDisabled();
+  await page.getByRole("checkbox", { name: /أفهم أنها نسخة/ }).check();
+  await save.click();
+  await expect(page.getByText(/حُفظت نسخة مستقلة/)).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "سبب الإبلاغ" })
+    .selectOption("incorrect");
+  await page.getByRole("button", { name: "إرسال بلاغ للمراجعة" }).click();
+  await expect(page.getByText(/استُلم البلاغ للمراجعة البشرية/)).toBeVisible();
+  expect(
+    (
+      await page.request.get(`/v1/notebooks/${nid}/sources`, {
+        headers: recipient,
+      })
+    ).status(),
+  ).toBe(404);
+  const copies = await (
+    await page.request.get("/v1/notebooks", { headers: recipient })
+  ).json();
+  expect(copies).toHaveLength(1);
+  expect(
+    (
+      await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner })
+    ).status(),
+  ).toBe(204);
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: copies[0].title }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await expect(page.getByText("نسخة مشتركة · غير مدققة").first()).toBeVisible();
+  await expect(
+    page.getByText("سؤال مستقل", { exact: true }).first(),
+  ).toBeVisible();
+});
