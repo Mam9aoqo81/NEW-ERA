@@ -207,3 +207,75 @@ test("YouTube link + user-owned timed captions → timestamp citation → histor
     page.getByRole("button", { name: /مقطع تعليمي اختباري.*0:15/ }),
   ).toBeVisible();
 });
+
+test("source-linked cards, review schedule, saved quiz and study output", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "حساب جديد" }).click();
+  await page
+    .getByLabel("اسم المستخدم")
+    .fill(`learn_${info.project.name}_${Date.now()}`);
+  await page.getByLabel("كلمة المرور").fill("development-test-password");
+  await page.getByRole("button", { name: "أنشئ مساحة تعلّمك" }).click();
+  await page.getByRole("button", { name: "إنشاء أول دفتر" }).click();
+  await page.getByLabel("اسم الدفتر").fill("مراجعة العلوم");
+  await page.getByRole("button", { name: "إنشاء الدفتر", exact: true }).click();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: /^المصادر/ }).click();
+  await page.getByRole("button", { name: "جرّب بمصدر تعليمي جاهز" }).click();
+  await expect(
+    page.getByRole("checkbox", { name: /البناء الضوئي · مصدر تجريبي/ }),
+  ).toBeChecked();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page.getByRole("button", { name: "إنشاء بطاقات من المصادر" }).click();
+  await expect(
+    page.getByRole("button", { name: "إظهار الإجابة" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إظهار الإجابة" }).click();
+  await page.getByRole("button", { name: "جيد", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("تم الحفظ");
+  await page
+    .getByRole("button", { name: "اختبار تفاعلي", exact: true })
+    .click();
+  await page.getByRole("button", { name: "إنشاء اختبار من البطاقات" }).click();
+  await expect(page.locator(".quiz-question").first()).toBeVisible();
+  for (const question of await page.locator(".quiz-question").all())
+    await question.getByRole("radio").first().check();
+  await page.getByRole("button", { name: "تصحيح وحفظ النتيجة" }).click();
+  await expect(page.locator(".quiz-score")).toContainText("النتيجة محفوظة");
+  await page
+    .locator(".quiz-explanation")
+    .first()
+    .getByRole("button", { name: /المرجع/ })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "إنشاء وحفظ من المصادر المحددة" })
+    .click();
+  await expect(
+    page.locator(".artifact-blocks blockquote").first(),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await expect(
+    page.getByRole("button", { name: "إظهار الإجابة" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "اختبار تفاعلي", exact: true })
+    .click();
+  await page.getByLabel("اختبار محفوظ").selectOption({ index: 1 });
+  await page.getByRole("button", { name: "عرض آخر نتيجة محفوظة" }).click();
+  await expect(page.locator(".quiz-score")).toBeVisible();
+});

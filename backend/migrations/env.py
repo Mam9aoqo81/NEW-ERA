@@ -3,6 +3,7 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import create_engine, pool
 from knowlm.main import Base
+import knowlm.learning  # register learning tables for schema comparison
 
 config = context.config
 url = os.getenv('DATABASE_URL') or config.get_main_option('sqlalchemy.url')

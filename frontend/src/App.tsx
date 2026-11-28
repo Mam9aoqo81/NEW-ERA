@@ -1,3 +1,4 @@
+import StudyTools from "./StudyTools";
 import { citationLabel, isTimed, safeVideoLink } from "./citations";
 import { useNotebookChat } from "./useNotebookChat";
 import {
@@ -648,7 +649,8 @@ function Workspace({
     [mode, setMode] = useState<"extractive" | "grounded">("extractive"),
     [citation, setCitation] = useState<Citation | null>(null),
     [tab, setTab] = useState<"chat" | "sources">("chat"),
-    [sampleBusy, setSampleBusy] = useState(false);
+    [sampleBusy, setSampleBusy] = useState(false),
+    [toolsOpen, setToolsOpen] = useState(false);
   const seen = useRef(new Set<string>()),
     refreshVersion = useRef(0),
     end = useRef<HTMLDivElement>(null),
@@ -759,15 +761,25 @@ function Workspace({
             </p>
           </div>
         </div>
-        <button
-          className="outline"
-          onClick={() => {
-            setAdd(true);
-            setTab("sources");
-          }}
-        >
-          <Plus size={17} /> إضافة مصدر
-        </button>
+        <div className="notebook-heading-actions">
+          <button
+            className="outline tools-open-button"
+            aria-pressed={toolsOpen}
+            onClick={() => setToolsOpen(!toolsOpen)}
+          >
+            <Layers3 size={16} />
+            {toolsOpen ? "العودة للمحادثة" : "أدوات المراجعة"}
+          </button>
+          <button
+            className="outline"
+            onClick={() => {
+              setAdd(true);
+              setTab("sources");
+            }}
+          >
+            <Plus size={17} /> إضافة مصدر
+          </button>
+        </div>
       </section>
       <div className="notebook-strip">
         <span>
@@ -781,7 +793,7 @@ function Workspace({
           {llm ? "التوليد الاختياري متاح" : "البحث المحلي · دون إرسال خارجي"}
         </span>
       </div>
-      <div className="mobile-tabs">
+      <div className={`mobile-tabs ${toolsOpen ? "tools-hidden" : ""}`}>
         <button
           className={tab === "chat" ? "active" : ""}
           onClick={() => setTab("chat")}
@@ -795,7 +807,15 @@ function Workspace({
           <FileText size={16} /> المصادر <b>{sources.length}</b>
         </button>
       </div>
-      <div className="study-grid">
+      {toolsOpen && (
+        <StudyTools
+          notebookId={notebook.id}
+          token={token}
+          sourceIds={selected}
+          onCitation={setCitation}
+        />
+      )}
+      <div className={`study-grid ${toolsOpen ? "tools-hidden" : ""}`}>
         <section
           className={`sources-panel panel ${tab === "sources" ? "mobile-active" : ""}`}
           aria-label="المصادر"

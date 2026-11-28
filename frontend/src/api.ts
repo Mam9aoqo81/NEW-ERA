@@ -36,6 +36,22 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Deck not found": "مجموعة البطاقات غير متاحة.",
+  "Card not found": "البطاقة غير متاحة أو حُذفت.",
+  "Quiz not found": "الاختبار غير متاح.",
+  "Not enough source text to create deletion cards":
+    "لا توجد مقاطع مناسبة كافية في المصادر المحددة. جرّب نصًا أطول أو أنشئ بطاقات يدويًا.",
+  "At least two distinct card answers are required":
+    "يحتاج الاختبار إلى بطاقتين بإجابتين مختلفتين على الأقل.",
+  "Answer every quiz question with a valid choice":
+    "أجب عن كل سؤال باختيار صالح قبل حفظ المحاولة.",
+  "Card changed; refresh before editing":
+    "عُدلت البطاقة في جلسة أخرى. حدّث البطاقات ثم أعد التحرير.",
+  "Review changed; reload the cards":
+    "تغيّرت حالة المراجعة. حدّث البطاقات قبل تقييمها مجددًا.",
+  "Deck card limit reached": "الحد الحالي 200 بطاقة في المجموعة.",
+  "No eligible source passages for this output":
+    "لا توجد مقاطع مناسبة لهذا المخرج. للتسلسل الزمني يجب وجود سنوات مذكورة صراحةً في النص.",
   "Invalid YouTube video URL":
     "أدخل رابط فيديو YouTube صالحًا، وليس رابط قناة أو قائمة تشغيل.",
   "Expected valid timed SRT or WebVTT captions":

@@ -139,6 +139,7 @@ def password_hash(password, salt=None):
 
 
 def create_app(database_url=None, *, initialize_schema=True, answer_provider=None):
+    from knowlm.learning import register_learning
     data = Path(os.getenv('KNOWLM_DATA_DIR', 'backend/data'))
     data.mkdir(parents=True, exist_ok=True)
     url = database_url or os.getenv('DATABASE_URL', f'sqlite:///{data / "knowlm.db"}')
@@ -147,7 +148,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.6.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.7.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     bearer = HTTPBearer(auto_error=False)
 
@@ -483,5 +484,6 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 'citations': citations, 'retrieval': 'bm25_char_rrf',
                 'notice': 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
+    register_learning(app, db, current_user, owned)
     return app
 
