@@ -194,19 +194,20 @@ def make_cards(rows, notebook_id, count):
     return result
 
 
-def register_learning(app, db, current_user, owned):
-    def deck_owned(deck_id, user_id, session):
+def register_learning(app, db, current_user, owned, readable=None):
+    readable = readable or owned
+    def deck_owned(deck_id, user_id, session, read=False):
         deck = session.get(Deck, deck_id)
         if not deck:
             raise HTTPException(404, 'Deck not found')
-        owned(deck.notebook_id, user_id, session)
+        (readable if read else owned)(deck.notebook_id, user_id, session)
         return deck
 
-    def card_owned(card_id, user_id, session):
+    def card_owned(card_id, user_id, session, read=False):
         card = session.get(Card, card_id)
         if not card or card.deleted_at is not None:
             raise HTTPException(404, 'Card not found')
-        deck_owned(card.deck_id, user_id, session)
+        deck_owned(card.deck_id, user_id, session, read=read)
         return card
 
     def card_json(card, user_id, session):
@@ -222,7 +223,7 @@ def register_learning(app, db, current_user, owned):
 
     @app.get('/v1/notebooks/{notebook_id}/decks')
     def decks(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        readable(notebook_id, user_id, session)
         return [deck_json(d) for d in session.scalars(select(Deck).where(Deck.notebook_id == notebook_id).order_by(Deck.created_at, Deck.id))]
 
     @app.post('/v1/notebooks/{notebook_id}/decks', status_code=201)
@@ -253,7 +254,7 @@ def register_learning(app, db, current_user, owned):
 
     @app.get('/v1/decks/{deck_id}/cards')
     def cards(deck_id: str, due_only: bool = False, user_id=Depends(current_user), session: Session = Depends(db)):
-        deck_owned(deck_id, user_id, session)
+        deck_owned(deck_id, user_id, session, read=True)
         rows = session.scalars(select(Card).where(Card.deck_id == deck_id, Card.deleted_at.is_(None)).order_by(Card.id)).all()
         result = [card_json(c, user_id, session) for c in rows]
         return [c for c in result if c['review']['due']] if due_only else result
@@ -289,7 +290,7 @@ def register_learning(app, db, current_user, owned):
 
     @app.post('/v1/cards/{card_id}/reviews')
     def review(card_id: str, body: ReviewInput, user_id=Depends(current_user), session: Session = Depends(db)):
-        card = card_owned(card_id, user_id, session)
+        card = card_owned(card_id, user_id, session, read=True)
         request_id, fingerprint = str(body.request_id), digest({'card_id': card_id, **body.model_dump(mode='json')})
         def replay():
             event = session.scalar(select(ReviewEvent).where(ReviewEvent.user_id == user_id, ReviewEvent.request_id == request_id))
@@ -331,7 +332,7 @@ def register_learning(app, db, current_user, owned):
     def quiz_owned(quiz_id, user_id, session):
         quiz = session.get(Quiz, quiz_id)
         if not quiz: raise HTTPException(404, 'Quiz not found')
-        deck_owned(quiz.deck_id, user_id, session)
+        deck_owned(quiz.deck_id, user_id, session, read=True)
         return quiz
 
     def public_quiz(quiz):
@@ -340,7 +341,7 @@ def register_learning(app, db, current_user, owned):
 
     @app.get('/v1/decks/{deck_id}/quizzes')
     def quizzes(deck_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        deck_owned(deck_id, user_id, session)
+        deck_owned(deck_id, user_id, session, read=True)
         return [{'id': q.id, 'title': q.title, 'count': len(q.questions)} for q in session.scalars(select(Quiz).where(Quiz.deck_id == deck_id).order_by(Quiz.created_at))]
 
     @app.post('/v1/decks/{deck_id}/quizzes', status_code=201)
@@ -417,7 +418,7 @@ def register_learning(app, db, current_user, owned):
 
     @app.get('/v1/notebooks/{notebook_id}/study-artifacts')
     def artifacts(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        readable(notebook_id, user_id, session)
         return [artifact_json(a) for a in session.scalars(select(StudyArtifact).where(StudyArtifact.notebook_id == notebook_id).order_by(StudyArtifact.created_at.desc()).limit(30))]
 
     @app.post('/v1/notebooks/{notebook_id}/study-artifacts', status_code=201)

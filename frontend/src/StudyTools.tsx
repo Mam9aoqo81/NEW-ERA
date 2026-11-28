@@ -1,6 +1,8 @@
 import { SharePublisher } from "./Sharing";
 import MindMap, { type StudyGraph } from "./MindMap";
 import {
+  createContext,
+  useContext,
   useCallback,
   useEffect,
   useRef,
@@ -103,17 +105,21 @@ function Reference({
   );
 }
 
+const Permissions = createContext({ readOnly: false, publish: true });
 export default function StudyTools({
+  role = "owner",
   notebookId,
   token,
   sourceIds,
   onCitation,
 }: {
+  role?: "owner" | "editor" | "viewer";
   notebookId: string;
   token: string;
   sourceIds: string[];
   onCitation: (c: Citation) => void;
 }) {
+  const readOnly = role === "viewer";
   const [decks, setDecks] = useState<Deck[]>([]),
     [chosen, setChosen] = useState(""),
     [title, setTitle] = useState("بطاقات المراجعة"),
@@ -164,112 +170,120 @@ export default function StudyTools({
     }
   }
   return (
-    <section className="study-tools" aria-label="أدوات الدراسة">
-      <header className="tools-heading">
-        <span className="tools-icon">
-          <Layers3 size={23} />
-        </span>
-        <div>
-          <h2>حوّل المعرفة إلى ممارسة.</h2>
-          <p>بطاقات واختبارات ومقاطع دراسة محفوظة في دفترك.</p>
+    <Permissions.Provider value={{ readOnly, publish: role === "owner" }}>
+      <section className="study-tools" aria-label="أدوات الدراسة">
+        <header className="tools-heading">
+          <span className="tools-icon">
+            <Layers3 size={23} />
+          </span>
+          <div>
+            <h2>حوّل المعرفة إلى ممارسة.</h2>
+            <p>بطاقات واختبارات ومقاطع دراسة محفوظة في دفترك.</p>
+          </div>
+        </header>
+        <div className="tools-tabs">
+          <button
+            aria-pressed={tab === "cards"}
+            onClick={() => setTab("cards")}
+          >
+            <Layers3 size={16} /> البطاقات والاختبارات
+          </button>
+          <button
+            aria-pressed={tab === "artifacts"}
+            onClick={() => setTab("artifacts")}
+          >
+            <BookOpen size={16} /> مخرجات الدراسة
+          </button>
         </div>
-      </header>
-      <div className="tools-tabs">
-        <button aria-pressed={tab === "cards"} onClick={() => setTab("cards")}>
-          <Layers3 size={16} /> البطاقات والاختبارات
-        </button>
-        <button
-          aria-pressed={tab === "artifacts"}
-          onClick={() => setTab("artifacts")}
-        >
-          <BookOpen size={16} /> مخرجات الدراسة
-        </button>
-      </div>
-      {tab === "artifacts" ? (
-        <Artifacts
-          key={notebookId}
-          base={base}
-          token={token}
-          sourceIds={sourceIds}
-          onCitation={onCitation}
-        />
-      ) : (
-        <>
-          <div className="tools-notice">
-            التوليد المحلي يصنع بطاقات حذف كلمة من النص حرفيًا، وليس أسئلة مؤلّفة
-            بنموذج AI. راجعها وعدّلها قبل الاعتماد عليها. النطاق الحالي:{" "}
-            {sourceIds.length} مصادر محددة.
-          </div>
-          <div className="deck-create">
-            <label>
-              اسم مجموعة البطاقات
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                maxLength={200}
-              />
-            </label>
-            <button
-              className="primary"
-              disabled={busy || !title.trim() || !sourceIds.length}
-              onClick={() => void create(true)}
-            >
-              {busy ? <Spinner /> : <Layers3 size={16} />} إنشاء بطاقات من
-              المصادر
-            </button>
-            <button
-              className="outline"
-              disabled={busy || !title.trim()}
-              onClick={() => void create(false)}
-            >
-              <Plus size={16} /> مجموعة يدوية
-            </button>
-          </div>
-          {error && (
-            <div className="error" role="alert">
-              {error}
-              <button className="history-retry" onClick={() => void load()}>
-                تحديث المجموعات
+        {tab === "artifacts" ? (
+          <Artifacts
+            key={notebookId}
+            base={base}
+            token={token}
+            sourceIds={sourceIds}
+            onCitation={onCitation}
+          />
+        ) : (
+          <>
+            <div className="tools-notice">
+              التوليد المحلي يصنع بطاقات حذف كلمة من النص حرفيًا، وليس أسئلة
+              مؤلّفة بنموذج AI. راجعها وعدّلها قبل الاعتماد عليها. النطاق الحالي:{" "}
+              {sourceIds.length} مصادر محددة.
+            </div>
+            <div className="deck-create">
+              <label>
+                اسم مجموعة البطاقات
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  maxLength={200}
+                />
+              </label>
+              <button
+                className="primary"
+                disabled={
+                  readOnly || busy || !title.trim() || !sourceIds.length
+                }
+                onClick={() => void create(true)}
+              >
+                {busy ? <Spinner /> : <Layers3 size={16} />} إنشاء بطاقات من
+                المصادر
+              </button>
+              <button
+                className="outline"
+                disabled={readOnly || busy || !title.trim()}
+                onClick={() => void create(false)}
+              >
+                <Plus size={16} /> مجموعة يدوية
               </button>
             </div>
-          )}
-          {decks.length ? (
-            <>
-              <label className="deck-choice">
-                المجموعة الحالية
-                <select
-                  value={chosen}
-                  onChange={(e) => setChosen(e.target.value)}
-                >
-                  {decks.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {chosen && (
-                <DeckPanel
-                  key={chosen}
-                  deckId={chosen}
-                  notebookId={notebookId}
-                  token={token}
-                  onCitation={onCitation}
-                />
-              )}
-            </>
-          ) : (
-            <div className="tools-empty">
-              <Layers3 size={32} />
-              <h3>فهمك يستحق أن يبقى.</h3>
-              <p>
-                أنشئ مجموعة يدويًا، أو أضف مصادر وحددها ثم أنشئ بطاقات اقتباسية.
-              </p>
-            </div>
-          )}
-        </>
-      )}
-    </section>
+            {error && (
+              <div className="error" role="alert">
+                {error}
+                <button className="history-retry" onClick={() => void load()}>
+                  تحديث المجموعات
+                </button>
+              </div>
+            )}
+            {decks.length ? (
+              <>
+                <label className="deck-choice">
+                  المجموعة الحالية
+                  <select
+                    value={chosen}
+                    onChange={(e) => setChosen(e.target.value)}
+                  >
+                    {decks.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {chosen && (
+                  <DeckPanel
+                    key={chosen}
+                    deckId={chosen}
+                    notebookId={notebookId}
+                    token={token}
+                    onCitation={onCitation}
+                  />
+                )}
+              </>
+            ) : (
+              <div className="tools-empty">
+                <Layers3 size={32} />
+                <h3>فهمك يستحق أن يبقى.</h3>
+                <p>
+                  أنشئ مجموعة يدويًا، أو أضف مصادر وحددها ثم أنشئ بطاقات
+                  اقتباسية.
+                </p>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    </Permissions.Provider>
   );
 }
 function DeckPanel({
@@ -283,6 +297,7 @@ function DeckPanel({
   token: string;
   onCitation: (c: Citation) => void;
 }) {
+  const { readOnly, publish } = useContext(Permissions);
   const [cards, setCards] = useState<Card[]>([]),
     [loaded, setLoaded] = useState(false),
     [error, setError] = useState(""),
@@ -319,6 +334,9 @@ function DeckPanel({
     void load(c.signal);
     return () => c.abort();
   }, [load]);
+  useEffect(() => {
+    if (readOnly && tab === "edit") setTab("practice");
+  }, [readOnly, tab]);
   const eligible = cards.filter((c) => !dueOnly || c.review.due),
     card = eligible[index] || eligible[0];
   useEffect(() => {
@@ -399,13 +417,15 @@ function DeckPanel({
   }
   return (
     <div className="deck-panel">
-      <SharePublisher
-        key={deckId}
-        target={`/v1/decks/${deckId}`}
-        notebookId={notebookId}
-        token={token}
-        kind="cards"
-      />
+      {publish && (
+        <SharePublisher
+          key={deckId}
+          target={`/v1/decks/${deckId}`}
+          notebookId={notebookId}
+          token={token}
+          kind="cards"
+        />
+      )}
       <div className="practice-tabs">
         <button
           aria-pressed={tab === "practice"}
@@ -413,7 +433,11 @@ function DeckPanel({
         >
           مراجعة البطاقات <b>{cards.length}</b>
         </button>
-        <button aria-pressed={tab === "edit"} onClick={() => setTab("edit")}>
+        <button
+          disabled={readOnly}
+          aria-pressed={tab === "edit"}
+          onClick={() => setTab("edit")}
+        >
           إنشاء وتحرير
         </button>
         <button aria-pressed={tab === "quiz"} onClick={() => setTab("quiz")}>
@@ -671,6 +695,7 @@ function QuizPanel({
   token: string;
   onCitation: (c: Citation) => void;
 }) {
+  const { readOnly, publish } = useContext(Permissions);
   const [list, setList] = useState<
       { id: string; title: string; count: number }[]
     >([]),
@@ -780,7 +805,7 @@ function QuizPanel({
       <div className="tools-row">
         <button
           className="primary"
-          disabled={busy}
+          disabled={readOnly || busy}
           onClick={() => void create()}
         >
           {busy ? <Spinner /> : <Plus size={16} />} إنشاء اختبار من البطاقات
@@ -813,13 +838,15 @@ function QuizPanel({
       )}
       {quiz && (
         <>
-          <SharePublisher
-            key={quiz.id}
-            target={`/v1/quizzes/${quiz.id}`}
-            notebookId={notebookId}
-            token={token}
-            kind="quiz"
-          />
+          {publish && (
+            <SharePublisher
+              key={quiz.id}
+              target={`/v1/quizzes/${quiz.id}`}
+              notebookId={notebookId}
+              token={token}
+              kind="quiz"
+            />
+          )}
           <div className="quiz-attempts">
             {attempts.length > 0 && (
               <button
@@ -925,6 +952,7 @@ function Artifacts({
   sourceIds: string[];
   onCitation: (c: Citation) => void;
 }) {
+  const { readOnly, publish } = useContext(Permissions);
   const [items, setItems] = useState<Artifact[]>([]),
     [kind, setKind] = useState("study_guide"),
     [chosen, setChosen] = useState(""),
@@ -990,7 +1018,7 @@ function Artifacts({
         </label>
         <button
           className="primary"
-          disabled={busy || !sourceIds.length}
+          disabled={readOnly || busy || !sourceIds.length}
           onClick={() => void create()}
         >
           {busy ? <Spinner /> : <Plus size={16} />} إنشاء وحفظ من المصادر

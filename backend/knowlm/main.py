@@ -94,11 +94,12 @@ class IngestionJob(Base):
 class ChatTurn(Base):
     """An immutable, atomic question + validated answer snapshot, never a draft."""
     __tablename__ = 'chat_turns'
-    __table_args__ = (UniqueConstraint('notebook_id', 'request_id', name='uq_turn_request'),
+    __table_args__ = (UniqueConstraint('notebook_id', 'user_id', 'request_id', name='uq_turn_request'),
                       Index('ix_chat_turns_notebook_id_id', 'notebook_id', 'id'),
                       {'sqlite_autoincrement': True})
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     notebook_id: Mapped[str] = mapped_column(ForeignKey('notebooks.id'))
+    user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
     request_id: Mapped[str] = mapped_column(String(36))
     request_hash: Mapped[str] = mapped_column(String(64))
     question: Mapped[str] = mapped_column(Text)
@@ -148,6 +149,7 @@ def password_hash(password, salt=None):
 
 
 def create_app(database_url=None, *, initialize_schema=True, answer_provider=None, embedding_provider=None):
+    from knowlm.collaboration import Membership, access, register_collaboration
     from knowlm.sharing import register_sharing
     from knowlm.learning import register_learning
     from knowlm.limits import Limits, register_limits, quota_notebook, quota_source
@@ -160,7 +162,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.16.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.17.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
@@ -205,6 +207,12 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         if not notebook or notebook.owner_id != user_id:
             raise HTTPException(404, 'Notebook not found')
         return notebook
+
+    def readable(notebook_id,user_id,session):
+        return access(notebook_id,user_id,session)
+
+    def editable(notebook_id,user_id,session):
+        return access(notebook_id,user_id,session,write=True)
 
     def store_source(notebook_id, title, kind, pages, session):
         quota_source(session, notebook_id, limits)
@@ -308,16 +316,18 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.get('/v1/notebooks')
     def list_notebooks(user_id=Depends(current_user), session: Session = Depends(db)):
-        return [{'id': n.id, 'title': n.title} for n in session.scalars(select(Notebook).where(Notebook.owner_id == user_id))]
+        memberships={m.notebook_id:m.role for m in session.scalars(select(Membership).where(Membership.user_id==user_id))}
+        rows=session.scalars(select(Notebook).where((Notebook.owner_id==user_id) | Notebook.id.in_(memberships)))
+        return [{'id':n.id,'title':n.title,'role':'owner' if n.owner_id==user_id else memberships[n.id]} for n in rows]
 
     @app.post('/v1/notebooks/{notebook_id}/sources/text', status_code=201)
     def add_text(notebook_id: str, body: TextInput, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        editable(notebook_id, user_id, session)
         return store_source(notebook_id, body.title, 'text', [body.text], session)
 
     @app.post('/v1/notebooks/{notebook_id}/sources/pdf', status_code=201)
     async def add_pdf(notebook_id: str, file: UploadFile = File(...), user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        editable(notebook_id, user_id, session)
         try:
             raw = await file.read(10 * 1024 * 1024 + 1)
         finally:
@@ -337,7 +347,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.post('/v1/notebooks/{notebook_id}/sources/pdf-jobs', status_code=202)
     async def enqueue_pdf(notebook_id: str, file: UploadFile = File(...), user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        editable(notebook_id, user_id, session)
         try:
             raw = await file.read(10 * 1024 * 1024 + 1)
         finally:
@@ -359,7 +369,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.post('/v1/notebooks/{notebook_id}/sources/docx-jobs', status_code=202)
     async def enqueue_docx(notebook_id: str, file: UploadFile = File(...), user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        editable(notebook_id, user_id, session)
         try:
             raw = await file.read(10 * 1024 * 1024 + 1)
         finally:
@@ -381,7 +391,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.post('/v1/notebooks/{notebook_id}/sources/youtube-jobs', status_code=202)
     def enqueue_youtube(notebook_id: str, body: YouTubeInput, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        editable(notebook_id, user_id, session)
         from knowlm.youtube import canonical_video, parse_captions
         from knowlm.pdf import ExtractionError
         try:
@@ -408,17 +418,17 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         return {'id': job.id, 'source_id': source.id, 'status': job.status,
                 'status_url': f'/v1/jobs/{job.id}'}
 
-    def owned_job(job_id, user_id, session):
+    def owned_job(job_id, user_id, session, read=False):
         job = session.get(IngestionJob, job_id)
         if not job:
             raise HTTPException(404, 'Job not found')
         source = session.get(Source, job.source_id)
-        owned(source.notebook_id, user_id, session)
+        (readable if read else editable)(source.notebook_id, user_id, session)
         return job
 
     @app.get('/v1/jobs/{job_id}')
     def get_job(job_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        job = owned_job(job_id, user_id, session)
+        job = owned_job(job_id, user_id, session, read=True)
         return {'id': job.id, 'source_id': job.source_id, 'status': job.status,
                 'attempts': job.attempts, 'error_code': job.error_code}
 
@@ -442,7 +452,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.get('/v1/notebooks/{notebook_id}/sources')
     def list_sources(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        readable(notebook_id, user_id, session)
         rows = session.execute(select(Source, IngestionJob).outerjoin(
             IngestionJob, IngestionJob.source_id == Source.id).where(Source.notebook_id == notebook_id))
         return [{'id': s.id, 'title': s.title, 'kind': s.kind, 'status': s.status,
@@ -453,7 +463,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/paragraphs/{page}')
     @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/pages/{page}')
     def get_page(notebook_id: str, source_id: str, page: int, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        readable(notebook_id, user_id, session)
         source = session.get(Source, source_id)
         if not source or source.notebook_id != notebook_id:
             raise HTTPException(404, 'Source not found')
@@ -465,7 +475,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/chunks/{chunk_id}')
     def read_chunk(notebook_id: str, source_id: str, chunk_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        readable(notebook_id, user_id, session)
         source = session.get(Source, source_id)
         chunk = session.get(Chunk, chunk_id)
         if not source or source.notebook_id != notebook_id or not chunk or chunk.source_id != source_id:
@@ -489,8 +499,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     @app.get('/v1/notebooks/{notebook_id}/history')
     def history(notebook_id: str, limit: int = Query(40, ge=1, le=100),
                 before: int | None = Query(None, ge=1, le=9223372036854775807), user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
-        query = select(ChatTurn).where(ChatTurn.notebook_id == notebook_id)
+        readable(notebook_id, user_id, session)
+        query = select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.user_id == user_id)
         if before is not None:
             query = query.where(ChatTurn.id < before)
         rows = session.scalars(query.order_by(ChatTurn.id.desc()).limit(limit + 1)).all()
@@ -501,20 +511,22 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.delete('/v1/notebooks/{notebook_id}/history', status_code=204)
     def clear_history(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
-        session.execute(delete(ChatTurn).where(ChatTurn.notebook_id == notebook_id))
+        readable(notebook_id, user_id, session)
+        session.execute(delete(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.user_id == user_id))
         session.commit()
 
     @app.post('/v1/notebooks/{notebook_id}/ask')
     def ask(notebook_id: str, body: Question, user_id=Depends(current_user), session: Session = Depends(db)):
-        owned(notebook_id, user_id, session)
+        notebook = readable(notebook_id, user_id, session)
+        if notebook.owner_id != user_id and (body.mode == 'grounded' or body.semantic_consent):
+            raise HTTPException(403,'External processing requires notebook owner')
         request_id = str(body.request_id)
         request_data = {'question': body.question, 'mode': body.mode,
                         'source_ids': sorted(set(body.source_ids)) if body.source_ids is not None else None}
         if body.semantic_consent:
             request_data['semantic_consent'] = True
         request_hash = hashlib.sha256(json.dumps(request_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        previous = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.request_id == request_id))
+        previous = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.user_id == user_id, ChatTurn.request_id == request_id))
         if previous:
             if previous.request_hash != request_hash:
                 raise HTTPException(409, 'Request ID was already used for a different question')
@@ -523,7 +535,9 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         def persist(answer):
             # Persist question and complete validated answer in one transaction.
             # No draft or invalid provider output is ever written to history.
-            turn = ChatTurn(notebook_id=notebook_id, request_id=request_id,
+            session.expire_all()
+            readable(notebook_id,user_id,session)
+            turn = ChatTurn(notebook_id=notebook_id, user_id=user_id, request_id=request_id,
                             request_hash=request_hash, question=body.question,
                             source_ids=sorted({e.source_id for e in candidates}), mode=body.mode, answer=answer)
             session.add(turn)
@@ -531,7 +545,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 session.commit()
             except IntegrityError:
                 session.rollback()
-                turn = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.request_id == request_id))
+                turn = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.user_id == user_id, ChatTurn.request_id == request_id))
                 if not turn:
                     raise
                 if turn.request_hash != request_hash:
@@ -598,7 +612,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 'citations': citations, 'retrieval': retrieval_mode,
                 'notice': 'مقتطفات بحث دلالي تجريبي؛ التشابه لا يثبت دعم الإجابة أو صحة الادعاءات.' if body.semantic_consent else 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
-    register_learning(app, db, current_user, owned)
+    register_collaboration(app, db, current_user, owned)
+    register_learning(app, db, current_user, editable, readable)
     register_sharing(app, db, current_user, owned)
     return app
 

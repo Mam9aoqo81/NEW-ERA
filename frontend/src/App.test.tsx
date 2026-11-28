@@ -24,11 +24,13 @@ function mockApi({
   history = [],
   semantic = false,
   ocr = false,
+  notebookRole = "owner",
   deleteFails = false,
   deleteResponseLost = false,
 }: {
   semantic?: boolean;
   ocr?: boolean;
+  notebookRole?: "owner" | "viewer" | "editor";
   deleteFails?: boolean;
   deleteResponseLost?: boolean;
   history?: unknown[];
@@ -73,7 +75,8 @@ function mockApi({
           { id: "created-1", title: JSON.parse(String(init.body)).title },
           201,
         );
-      if (path === "/v1/notebooks") return respond(notebooks);
+      if (path === "/v1/notebooks")
+        return respond(notebooks.map((n) => ({ ...n, role: notebookRole })));
       if (path.includes("/history")) {
         if (init.method === "DELETE") {
           history.splice(0);
@@ -95,6 +98,7 @@ function mockApi({
           202,
         );
       if (path.endsWith("/sources")) return respond(sources);
+      if (path.endsWith("/decks")) return respond([]);
       if (path.endsWith("/pages/1"))
         return respond({
           source_id: source.id,
@@ -199,6 +203,26 @@ describe("KnowLM study flow", () => {
     ).toBe(true);
     await user.click(screen.getByRole("checkbox", { name: /محاضرة النباتات/ }));
     expect(consent).not.toBeChecked();
+  });
+  it("does not present owner deletion or source editing to a notebook viewer", async () => {
+    signedIn();
+    mockApi({ notebookRole: "viewer", semantic: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { level: 1, name: nb.title });
+    expect(
+      screen.queryByRole("button", { name: /^حذف الدفتر$/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^إضافة مصدر$/ })).toBeDisabled();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: /أوافق على إرسال السؤال وكل مقاطع/,
+      }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^أدوات المراجعة$/ }));
+    expect(
+      await screen.findByRole("button", { name: "مجموعة يدوية" }),
+    ).toBeDisabled();
   });
   it("creates the first notebook rather than showing fabricated content", async () => {
     signedIn();

@@ -1,4 +1,8 @@
-export type Notebook = { id: string; title: string };
+export type Notebook = {
+  id: string;
+  title: string;
+  role?: "owner" | "editor" | "viewer";
+};
 export type Source = {
   id: string;
   title: string;
@@ -25,6 +29,7 @@ export type Citation = {
   url: string;
 };
 export type Answer = {
+  turn_id?: number;
   mode: "extractive" | "grounded";
   answered: boolean;
   answer: string;
@@ -39,6 +44,28 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Notebook is read only":
+    "صلاحيتك قارئ؛ تعديل الدفتر متاح للمحرر والمالك فقط.",
+  "Invitation unavailable":
+    "الدعوة غير متاحة لهذا الحساب، أو استُخدمت أو أُلغيت أو انتهت. تحقق من مساحة الدراسة إذا سبق قبولها.",
+  "Explicit collaboration consent is required":
+    "راجع حدود مشاركة الدفتر وأكد موافقتك أولًا.",
+  "External processing requires notebook owner":
+    "إرسال مصادر هذا الدفتر لمزوّد خارجي متاح لمالك الدفتر فقط.",
+  "Invitation quota reached":
+    "وصل الدفتر إلى حد 20 دعوة معلقة. ألغِ دعوات قديمة أولًا.",
+  "Membership quota reached": "وصل الدفتر أو الحساب إلى حد 20 عضوية.",
+  "Room message quota reached":
+    "وصلت الغرفة إلى حد 1000 رسالة. احذف رسائل قديمة أولًا.",
+  "Room message is empty": "اكتب رسالة أو اختر إجابة لنشرها.",
+  "Explicit room publishing consent is required":
+    "أكد موافقتك على نشر الرسالة والإجابة لأعضاء الدفتر.",
+  "Room request ID already used":
+    "تغير محتوى طلب النشر. أعد المحاولة بطلب جديد.",
+  "Cannot invite notebook owner": "لا يمكن دعوة مالك الدفتر نفسه.",
+  "Owner cannot leave notebook":
+    "المالك لا يغادر دفتره؛ يمكنه حذفه بعد التأكيد.",
+
   "Explicit import consent is required":
     "أكد فهمك لطبيعة النسخة وحقك في حفظها أولًا.",
   "Only shared cards can be imported":

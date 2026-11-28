@@ -1,3 +1,4 @@
+import Collaboration, { JoinNotebook } from "./Collaboration";
 import SharedLearning from "./Sharing";
 import StudyTools from "./StudyTools";
 import { citationLabel, isTimed, safeVideoLink } from "./citations";
@@ -295,6 +296,8 @@ function Auth({ onLogin }: { onLogin: (token: string, user: User) => void }) {
 }
 
 export default function App() {
+  if (window.location.pathname === "/join")
+    return <JoinNotebook auth={(onLogin) => <Auth onLogin={onLogin} />} />;
   return window.location.pathname === "/share" ? (
     <SharedLearning />
   ) : (
@@ -706,13 +709,15 @@ function DeleteAccount({
       }}
     >
       <p className="muted">
-        سيُحذف حسابك وكل دفاترك ومصادرك ومحادثاتك وبطاقاتك ونتائجك من قاعدة
-        البيانات النشطة، وستُلغى كل جلسات الدخول. لا يمكن التراجع.
+        سيُحذف حسابك وكل الدفاتر التي تملكها ومصادرها ومحادثاتك وبطاقاتك ونتائجك
+        من قاعدة البيانات النشطة، وستُلغى كل جلسات الدخول. لا يمكن التراجع.
       </p>
       <p className="field-hint">
         لا يشمل ذلك النسخ الاحتياطية أو بيانات سبق إرسالها لمزوّد خارجي أو نسخًا
-        سبق تنزيلها. لو انقطع الرد بعد التنفيذ، أعد تحميل الصفحة للتحقق من
-        صلاحية جلستك؛ فشل الاتصال وحده لا يؤكد الحذف.
+        سبق تنزيلها. مصادر وأدوات أضفتها بصلاحية محرر في دفاتر يملكها آخرون تبقى
+        لديهم؛ رسائلك بالغرف ومحادثاتك ونتائجك الشخصية تُحذف. لو انقطع الرد بعد
+        التنفيذ، أعد تحميل الصفحة للتحقق من صلاحية جلستك؛ فشل الاتصال وحده لا
+        يؤكد الحذف.
       </p>
       <form onSubmit={submit}>
         <label>
@@ -777,6 +782,9 @@ function Workspace({
   semantic: boolean;
   onDeleted: () => void;
 }) {
+  const [role, setRole] = useState<"owner" | "editor" | "viewer">(
+    notebook.role || "owner",
+  );
   const [sources, setSources] = useState<Source[]>([]),
     [selected, setSelected] = useState<string[]>([]),
     [loaded, setLoaded] = useState(false),
@@ -850,6 +858,12 @@ function Workspace({
   useEffect(() => {
     setSemanticConsent(false);
   }, [selected.join(",")]);
+  useEffect(() => {
+    if (role !== "owner") {
+      setMode("extractive");
+      setSemanticConsent(false);
+    }
+  }, [role]);
   async function ask(e?: FormEvent, suggested?: string) {
     e?.preventDefault();
     const q = (suggested || question).trim();
@@ -910,6 +924,7 @@ function Workspace({
         <div className="notebook-heading-actions">
           <button
             className="icon-button"
+            style={role !== "owner" ? { display: "none" } : undefined}
             aria-label="حذف الدفتر"
             title="حذف الدفتر"
             onClick={() => {
@@ -930,6 +945,7 @@ function Workspace({
           </button>
           <button
             className="outline"
+            disabled={role === "viewer"}
             onClick={() => {
               setAdd(true);
               setTab("sources");
@@ -939,6 +955,19 @@ function Workspace({
           </button>
         </div>
       </section>
+      <Collaboration
+        notebookId={notebook.id}
+        token={token}
+        turns={chat.turns}
+        onRole={setRole}
+        onLeave={onDeleted}
+      />
+      {role !== "owner" && (
+        <p className="external-warning">
+          دفتر تعاوني · {role === "editor" ? "محرر" : "قارئ"}. محادثتك ونتائجك
+          خاصة. إرسال المصادر لمزوّد خارجي والنشر العام للمالك فقط.
+        </p>
+      )}
       <div className="notebook-strip">
         <span>
           <ShieldCheck size={16} /> إجابات مرتبطة بمصادرك
@@ -971,6 +1000,7 @@ function Workspace({
       </div>
       {toolsOpen && (
         <StudyTools
+          role={role}
           notebookId={notebook.id}
           token={token}
           sourceIds={selected}
@@ -1110,7 +1140,10 @@ function Workspace({
                       <div className="source-failure">
                         <p>{jobError(s.job?.error_code)}</p>
                         {s.job && s.job.attempts < 3 && (
-                          <button onClick={() => void retry(s)}>
+                          <button
+                            disabled={role === "viewer"}
+                            onClick={() => void retry(s)}
+                          >
                             <RotateCcw size={13} /> إعادة المحاولة
                           </button>
                         )}
@@ -1120,7 +1153,11 @@ function Workspace({
                 ))}
               </>
             )}
-            <button className="upload-zone" onClick={() => setAdd(true)}>
+            <button
+              disabled={role === "viewer"}
+              className="upload-zone"
+              onClick={() => setAdd(true)}
+            >
               <span>
                 <Upload size={20} />
               </span>
@@ -1134,7 +1171,7 @@ function Workspace({
               <button
                 className="sample-button"
                 onClick={() => void sample()}
-                disabled={sampleBusy}
+                disabled={role === "viewer" || sampleBusy}
               >
                 {sampleBusy ? <Busy /> : <Sparkles size={15} />} جرّب بمصدر
                 تعليمي جاهز
@@ -1337,14 +1374,14 @@ function Workspace({
                   onChange={(e) => setMode(e.target.value as typeof mode)}
                 >
                   <option value="extractive">مقتطفات موثّقة · محلي</option>
-                  <option value="grounded" disabled={!llm}>
+                  <option value="grounded" disabled={!llm || role !== "owner"}>
                     إجابة مولّدة {llm ? "" : "· غير مفعّلة"}
                   </option>
                 </select>
               </label>
               <span>{selected.length} مصادر محددة</span>
             </div>
-            {semantic && (
+            {semantic && role === "owner" && (
               <label className="external-warning">
                 <input
                   type="checkbox"

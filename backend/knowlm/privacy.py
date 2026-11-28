@@ -12,6 +12,9 @@ from knowlm.learning import Card, Deck, Quiz, QuizAttempt, ReviewEvent, ReviewSt
 def erase_notebook(session, notebook_id):
     # Serialize snapshot publication against parent erasure before deleting children.
     session.execute(update(Notebook).where(Notebook.id == notebook_id).values(title=Notebook.title))
+    from knowlm.collaboration import Membership, Invitation, RoomMessage
+    for model in (RoomMessage, Invitation, Membership):
+        session.execute(delete(model).where(model.notebook_id == notebook_id).execution_options(synchronize_session=False))
     from knowlm.sharing import LearningShare, ShareImport, ShareReport
     session.execute(delete(ShareImport).where(ShareImport.notebook_id == notebook_id).execution_options(synchronize_session=False))
     session.execute(delete(ShareReport).where(ShareReport.share_id.in_(select(LearningShare.id).where(LearningShare.notebook_id == notebook_id))).execution_options(synchronize_session=False))
@@ -46,6 +49,11 @@ def erase_account(session, user_id):
         Notebook.owner_id == user_id).order_by(Notebook.id).with_for_update()))
     for notebook_id in notebook_ids:
         erase_notebook(session, notebook_id)
+    from knowlm.collaboration import Membership, Invitation, RoomMessage
+    username = session.get(User,user_id).username
+    session.execute(delete(Invitation).where(Invitation.username == username).execution_options(synchronize_session=False))
+    for model in (Membership, RoomMessage, ChatTurn):
+        session.execute(delete(model).where(model.user_id == user_id).execution_options(synchronize_session=False))
     # Also remove this user's own activity should shared notebooks be added later.
     from knowlm.sharing import ShareReport
     session.execute(delete(ShareReport).where(ShareReport.reporter_id == user_id).execution_options(synchronize_session=False))

@@ -858,3 +858,222 @@ test("local Arabic/English scanned PDF → OCR page 2 → persisted private cita
     page.getByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
   ).toBeVisible();
 });
+
+test("targeted notebook invitation → private chats → explicit room answer → role change and removal", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  const ownerName = "team_owner_" + suffix,
+    memberName = "team_member_" + suffix;
+  async function register(username: string) {
+    expect(
+      (
+        await page.request.post("/v1/auth/register", {
+          data: { username, password },
+        })
+      ).status(),
+    ).toBe(201);
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await register(ownerName);
+  await register(memberName);
+  const owner = { Authorization: `Bearer ${ownerToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "دفتر الفريق التجريبي" },
+      })
+    ).json()
+  ).id;
+  expect(
+    (
+      await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+        headers: owner,
+        data: {
+          title: "مصدر الفريق",
+          text: "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء. تستخدم النباتات ضوء الشمس لتحويل الماء وثاني أكسيد الكربون إلى سكريات.",
+        },
+      })
+    ).status(),
+  ).toBe(201);
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    ownerToken,
+  );
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+    .click();
+  await page
+    .getByRole("textbox", { name: "اسم المستخدم المدعو" })
+    .fill(memberName);
+  await expect(
+    page.getByRole("button", { name: "إنشاء دعوة لمدة 7 أيام" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("checkbox", { name: /أوافق على إتاحة كل مصادر/ })
+    .check();
+  await page.getByRole("button", { name: "إنشاء دعوة لمدة 7 أيام" }).click();
+  const link = await page
+    .getByRole("textbox", { name: "رابط دعوة جديد" })
+    .inputValue();
+  const context = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const member = await context.newPage();
+    await member.goto(link);
+    await member
+      .getByRole("textbox", { name: "اسم المستخدم", exact: true })
+      .fill(memberName);
+    await member.getByLabel("كلمة المرور", { exact: true }).fill(password);
+    await member
+      .getByRole("button", { name: "ادخل إلى مساحتك", exact: true })
+      .click();
+    await expect(
+      member.getByRole("heading", { name: "دفتر الفريق التجريبي" }),
+    ).toBeVisible();
+    await member.getByRole("checkbox", { name: /أقبل الوصول لمصادر/ }).check();
+    await member.getByRole("button", { name: "قبول دعوة الدفتر" }).click();
+    await expect(member.getByRole("status")).toContainText("انضممت للدفتر");
+    await member.getByRole("link", { name: "KnowLM · مساحة الدراسة" }).click();
+    await expect(
+      member.getByRole("heading", { level: 1, name: "دفتر الفريق التجريبي" }),
+    ).toBeVisible();
+    await expect(
+      member.getByRole("button", { name: "حذف الدفتر", exact: true }),
+    ).toHaveCount(0);
+    await member
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await expect(
+      member.getByText("صلاحيتك: قارئ", { exact: true }),
+    ).toBeVisible();
+    if (info.project.name === "mobile")
+      await page
+        .getByRole("button", { name: "اسأل وافهم", exact: true })
+        .click();
+    await page
+      .getByRole("textbox", { name: "سؤالك عن المصادر" })
+      .fill("البناء الضوئي");
+    await page.getByRole("button", { name: "إرسال السؤال" }).click();
+    await expect(
+      page.getByRole("button", { name: /مصدر الفريق.*ص 1/ }),
+    ).toBeVisible();
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(member.locator(".room-message")).toHaveCount(0);
+    await page
+      .getByRole("combobox", { name: "إرفاق إجابة من محادثتي الخاصة" })
+      .selectOption({ index: 1 });
+    await page
+      .getByRole("textbox", { name: "رسالة لأعضاء الدفتر" })
+      .fill("إجابة اخترت نشرها للفريق");
+    await page
+      .getByRole("checkbox", { name: /راجعت الرسالة والإجابة المرفقة/ })
+      .check();
+    await page
+      .getByRole("button", { name: "نشر في غرفة الدفتر", exact: true })
+      .click();
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(member.locator(".room-message")).toContainText(
+      "إجابة اخترت نشرها للفريق",
+    );
+    await expect(member.locator(".room-message")).toContainText(
+      "البلاستيدات الخضراء",
+    );
+    const memberToken = await member.evaluate(() =>
+      sessionStorage.getItem("knowlm-token"),
+    );
+    const memberHeaders = { Authorization: `Bearer ${memberToken}` };
+    expect(
+      (
+        await (
+          await member.request.get(`/v1/notebooks/${nid}/history`, {
+            headers: memberHeaders,
+          })
+        ).json()
+      ).turns,
+    ).toHaveLength(0);
+    await member
+      .getByRole("textbox", { name: "رسالة لأعضاء الدفتر" })
+      .fill("مشاركة من القارئ");
+    await member
+      .getByRole("checkbox", { name: /راجعت الرسالة والإجابة المرفقة/ })
+      .check();
+    await member
+      .getByRole("button", { name: "نشر في غرفة الدفتر", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(page.locator(".room-message")).toContainText([
+      "إجابة اخترت نشرها للفريق",
+      "مشاركة من القارئ",
+    ]);
+    await page
+      .getByRole("combobox", { name: `صلاحية ${memberName}` })
+      .selectOption("editor");
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(
+      member.getByText("صلاحيتك: محرر", { exact: true }),
+    ).toBeVisible();
+    expect(
+      (
+        await member.request.post(`/v1/notebooks/${nid}/sources/text`, {
+          headers: memberHeaders,
+          data: { title: "إضافة محرر", text: "مصدر أضافه عضو الفريق" },
+        })
+      ).status(),
+    ).toBe(201);
+    await member.screenshot({
+      path: `../backend/data/collaboration-${info.project.name}.png`,
+      fullPage: true,
+    });
+    expect(
+      await member.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false);
+    await page
+      .getByRole("button", { name: `إزالة ${memberName}`, exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: `تأكيد إزالة ${memberName}`, exact: true })
+      .click();
+    await expect(
+      page.getByRole("combobox", { name: `صلاحية ${memberName}` }),
+    ).toHaveCount(0);
+    expect(
+      (
+        await member.request.get(`/v1/notebooks/${nid}/sources`, {
+          headers: memberHeaders,
+        })
+      ).status(),
+    ).toBe(404);
+    await member
+      .getByRole("button", { name: "تحديث الغرفة", exact: true })
+      .click();
+    await expect(
+      member.locator(".collaboration-body [role=alert]"),
+    ).toContainText("لا تملك صلاحية");
+    await expect(member.locator(".room-message")).toHaveCount(0);
+  } finally {
+    await context.close().catch(() => {});
+  }
+});

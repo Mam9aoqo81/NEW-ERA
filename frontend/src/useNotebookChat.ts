@@ -32,7 +32,7 @@ const restore = (t: StoredTurn): Turn => ({
   id: t.request_id,
   question: t.question,
   mode: t.mode,
-  answer: t.answer,
+  answer: { ...t.answer, turn_id: t.id },
   saved: true,
 });
 
