@@ -442,3 +442,80 @@ test("password-confirmed account deletion revokes all sessions", async ({
     timeout: 20000,
   });
 });
+
+test("real per-user question budget displays an Arabic retry message", async ({
+  page,
+}, info) => {
+  const username = `budget_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  const registered = await page.request.post("/v1/auth/register", {
+    data: { username, password },
+  });
+  expect(registered.status()).toBe(201);
+  const login = await page.request.post("/v1/auth/login", {
+    data: { username, password },
+  });
+  const token = (await login.json()).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const notebook = await page.request.post("/v1/notebooks", {
+    headers,
+    data: { title: "اختبار حد الأسئلة" },
+  });
+  const nid = (await notebook.json()).id;
+  // This suite uses the documented default of 30 questions per fixed minute.
+  // Freeze no server clocks: if a minute boundary intervenes, refill its budget.
+  let blocked: {
+    status: number;
+    body: string;
+    headers: Record<string, string>;
+  } | null = null;
+  for (let i = 0; i < 65; i++) {
+    const response = await page.request.post(`/v1/notebooks/${nid}/ask`, {
+      headers,
+      data: { question: "سؤال عن مصدر غير موجود" },
+    });
+    if (response.status() === 429) {
+      blocked = {
+        status: 429,
+        body: await response.text(),
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": response.headers()["retry-after"],
+        },
+      };
+      break;
+    }
+    expect(response.status()).toBe(200);
+  }
+  expect(blocked).not.toBeNull();
+  // Replay the actual API rejection only for the UI submission so a minute
+  // rollover during page load cannot make this assertion timing-dependent.
+  await page.route(`**/v1/notebooks/${nid}/ask`, (route) =>
+    route.fulfill(blocked!),
+  );
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    token,
+  );
+  // Add a source before opening the UI: empty-source notebooks correctly
+  // disable the question composer.
+  const source = await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: {
+      title: "مصدر الحد",
+      text: "هذه فقرة خاصة لاختبار حد الأسئلة في واجهة التطبيق.",
+    },
+  });
+  expect(source.status()).toBe(201);
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: "سؤالك عن المصادر" })
+    .fill("اختبار حد الأسئلة");
+  await page.getByRole("button", { name: "إرسال السؤال" }).click();
+  await expect(
+    page.getByText(/طلبات كثيرة خلال فترة قصيرة/).last(),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("knowlm-token")),
+  ).toBe(token);
+});

@@ -37,6 +37,15 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Request rate limit reached": "طلبات كثيرة خلال فترة قصيرة.",
+  "Request budget temporarily unavailable":
+    "تعذّر التحقق من حدود الاستخدام مؤقتًا. حاول مجددًا بعد قليل.",
+  "Notebook quota reached":
+    "وصلت للحد الأقصى لعدد الدفاتر في حسابك. احذف دفترًا لم تعد تحتاجه قبل إنشاء آخر.",
+  "Source quota reached":
+    "وصل هذا الدفتر للحد الأقصى من المصادر. استخدم دفترًا آخر أو احذف الدفتر كاملًا إذا لم تعد تحتاجه.",
+  "Active ingestion quota reached":
+    "بلغ هذا الدفتر الحد الأقصى لمهام المعالجة النشطة. انتظر اكتمال مهمة قبل إضافة ملف أو إعادة المحاولة.",
   "Password confirmation failed":
     "كلمة المرور غير صحيحة. لم يُحذف الحساب؛ أعد إدخالها للمحاولة.",
   "Deck not found": "مجموعة البطاقات غير متاحة.",
@@ -147,6 +156,15 @@ export async function api<T>(
       window.dispatchEvent(new Event("knowlm:expired"));
     const body = await response.json().catch(() => ({}));
     const detail = typeof body.detail === "string" ? body.detail : "";
+    if (response.status === 429) {
+      const wait = Number(response.headers.get("Retry-After"));
+      throw new Error(
+        (translations[detail] || "تم تجاوز حد الطلبات.") +
+          (Number.isFinite(wait) && wait > 0 && wait <= 3600
+            ? ` يمكنك المحاولة بعد ${Math.ceil(wait)} ثانية.`
+            : " حاول مجددًا بعد قليل."),
+      );
+    }
     throw new Error(
       translations[detail] ||
         (response.status === 422

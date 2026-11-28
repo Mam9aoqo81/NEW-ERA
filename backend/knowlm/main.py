@@ -146,16 +146,19 @@ def password_hash(password, salt=None):
 
 def create_app(database_url=None, *, initialize_schema=True, answer_provider=None):
     from knowlm.learning import register_learning
+    from knowlm.limits import Limits, register_limits, quota_notebook, quota_source
     data = Path(os.getenv('KNOWLM_DATA_DIR', 'backend/data'))
     data.mkdir(parents=True, exist_ok=True)
     url = database_url or os.getenv('DATABASE_URL', f'sqlite:///{data / "knowlm.db"}')
     engine = make_engine(url)
+    limits = Limits.from_env()
     # Prototype only: production must use reviewed database migrations.
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.11.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.12.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
+    register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
     # passwords/private source text). Return field metadata, never input values.
     from fastapi.exceptions import RequestValidationError
@@ -167,6 +170,17 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             {'type': error['type'], 'loc': list(error['loc']), 'msg': error['msg']}
             for error in exc.errors()
         ]})
+
+    from sqlalchemy.exc import OperationalError
+
+    @app.exception_handler(OperationalError)
+    async def database_busy(request, exc):
+        if engine.dialect.name == 'sqlite' and 'locked' in str(exc.orig).lower():
+            return JSONResponse(status_code=503, content={'detail':'Request budget temporarily unavailable'},
+                                headers={'Retry-After':'2','Cache-Control':'no-store'})
+        # Do not turn unrelated SQL errors into successful or unlimited requests.
+        return JSONResponse(status_code=503, content={'detail':'Database temporarily unavailable'},
+                            headers={'Retry-After':'2','Cache-Control':'no-store'})
 
     bearer = HTTPBearer(auto_error=False)
 
@@ -189,6 +203,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         return notebook
 
     def store_source(notebook_id, title, kind, pages, session):
+        quota_source(session, notebook_id, limits)
         source = Source(notebook_id=notebook_id, title=title, kind=kind,
                         content_hash=hashlib.sha256('\f'.join(pages).encode()).hexdigest())
         session.add(source)
@@ -266,6 +281,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
 
     @app.post('/v1/notebooks', status_code=201)
     def create_notebook(body: NotebookInput, user_id=Depends(current_user), session: Session = Depends(db)):
+        quota_notebook(session, user_id, limits)
         notebook = Notebook(title=body.title.strip(), owner_id=user_id)
         session.add(notebook)
         session.commit()
@@ -323,6 +339,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             raise HTTPException(413, 'PDF limit is 10 MiB')
         if not raw.startswith(b'%PDF-'):
             raise HTTPException(415, 'Expected a PDF file')
+        quota_source(session, notebook_id, limits, queued=True)
         source = Source(notebook_id=notebook_id, title=(file.filename or 'Document')[:200],
                         kind='pdf', status='processing', content_hash=hashlib.sha256(raw).hexdigest())
         session.add(source)
@@ -344,6 +361,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             raise HTTPException(413, 'Document limit is 10 MiB')
         if not (file.filename or '').lower().endswith('.docx') or not raw.startswith(b'PK\x03\x04'):
             raise HTTPException(415, 'Expected a DOCX file')
+        quota_source(session, notebook_id, limits, queued=True)
         source = Source(notebook_id=notebook_id, title=(file.filename or 'Document.docx')[:200],
                         kind='docx', status='processing', content_hash=hashlib.sha256(raw).hexdigest())
         session.add(source)
@@ -371,6 +389,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             except ExtractionError:
                 raise HTTPException(422, 'Expected valid timed SRT or WebVTT captions')
         payload = json.dumps({'video_id': video_id, 'captions': body.captions}, ensure_ascii=False).encode()
+        quota_source(session, notebook_id, limits, queued=True)
         source = Source(notebook_id=notebook_id, title=body.title or f'YouTube · {video_id}',
                         kind='youtube', status='processing', content_hash=hashlib.sha256(payload).hexdigest(),
                         external_url=canonical, transcript_origin='user_captions' if body.captions is not None else 'youtube_captions')
@@ -399,6 +418,10 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     @app.post('/v1/jobs/{job_id}/retry', status_code=202)
     def retry_job(job_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
         job = owned_job(job_id, user_id, session)
+        source = session.get(Source, job.source_id)
+        if job.status != 'failed' or job.attempts >= 3:
+            raise HTTPException(409, 'Only failed jobs with fewer than 3 attempts may be retried')
+        quota_source(session, source.notebook_id, limits, queued=True, existing=True)
         result = session.execute(update(IngestionJob).where(IngestionJob.id == job.id,
                                  IngestionJob.status == 'failed', IngestionJob.attempts < 3).values(
                                  status='pending', error_code=None, lease_token=None, lease_until=None))

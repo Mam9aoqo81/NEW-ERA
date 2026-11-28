@@ -31,18 +31,23 @@ def test_existing_notebooks_and_sources_survive_history_migration(tmp_path, monk
     command.upgrade(config, '0003_vector_extension')
     app = create_app(url, initialize_schema=False)
     with TestClient(app) as c:
-        headers = auth(c, 'student')
-        nid = notebook(c, headers)
+        from knowlm.main import password_hash
+        import uuid
+        nid, owner_id = str(uuid.uuid4()), str(uuid.uuid4())
         # Seed the historical schema directly, without today's expanded ORM model.
         from sqlalchemy import text
         import uuid
         sid = str(uuid.uuid4())
         with app.state.engine.begin() as connection:
+            connection.execute(text('INSERT INTO users (id, username, password_hash) VALUES (:id, :name, :password)'), {'id':owner_id, 'name':'student', 'password':password_hash('secure-password-123')})
+            connection.execute(text('INSERT INTO notebooks (id, owner_id, title) VALUES (:id, :owner, :title)'), {'id':nid, 'owner':owner_id, 'title':'الأحياء'})
             connection.execute(text('INSERT INTO sources (id, notebook_id, title, kind, status, content_hash) VALUES (:id, :nid, :title, :kind, :status, :hash)'),
                                {'id': sid, 'nid': nid, 'title': 'كتاب', 'kind': 'text', 'status': 'ready', 'hash': 'a'*64})
             connection.execute(text('INSERT INTO source_chunks (id, source_id, page, chunk_index, text) VALUES (:id, :sid, 1, 0, :text)'),
                                {'id': str(uuid.uuid4()), 'sid': sid, 'text': 'البناء الضوئي داخل البلاستيدات الخضراء.'})
         command.upgrade(config, 'head')
+        token = c.post('/v1/auth/login', json={'username':'student','password':'secure-password-123'}).json()['access_token']
+        headers = {'Authorization':f'Bearer {token}'}
         assert c.get(f'/v1/notebooks/{nid}/sources', headers=headers).json()[0]['id'] == sid
         assert c.get(f'/v1/notebooks/{nid}/history', headers=headers).json()['turns'] == []
         assert c.post(f'/v1/notebooks/{nid}/ask', headers=headers, json={'question': 'البناء الضوئي'}).status_code == 200

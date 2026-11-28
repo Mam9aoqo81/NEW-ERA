@@ -41,7 +41,8 @@ def erase_account(session, user_id):
     for notebook_id in notebook_ids:
         erase_notebook(session, notebook_id)
     # Also remove this user's own activity should shared notebooks be added later.
-    for model in (QuizAttempt, ReviewEvent, ReviewState, AuthSession):
+    from knowlm.limits import RateBucket
+    for model in (QuizAttempt, ReviewEvent, ReviewState, AuthSession, RateBucket):
         session.execute(delete(model).where(model.user_id == user_id).execution_options(synchronize_session=False))
     session.execute(delete(User).where(User.id == user_id).execution_options(synchronize_session=False))
     # No commit here: re-authentication route owns the single atomic transaction.
