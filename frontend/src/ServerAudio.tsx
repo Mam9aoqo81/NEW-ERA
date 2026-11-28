@@ -53,6 +53,9 @@ export default function ServerAudio({
   const request = useRef<AbortController | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const objectUrl = useRef<string | null>(null);
+  const [external, setExternal] = useState(true);
+  const [retain, setRetain] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -79,14 +82,30 @@ export default function ServerAudio({
   }, []);
   useEffect(() => {
     const c = new AbortController();
-    api<{ enabled: boolean }>("/v1/audio/config", token, { signal: c.signal })
-      .then((r) => setEnabled(r.enabled))
+    api<{ enabled: boolean; external_processing?: boolean }>(
+      "/v1/audio/config",
+      token,
+      { signal: c.signal },
+    )
+      .then((r) => {
+        setEnabled(r.enabled);
+        setExternal(r.external_processing !== false);
+      })
       .catch(() => {
         if (!c.signal.aborted)
           setError("تعذر التحقق من توفر توليد الصوت الخادمي.");
       });
+    api<{ saved: boolean }>(
+      `/v1/study-artifacts/${artifactId}/audio/status`,
+      token,
+      { signal: c.signal },
+    )
+      .then((r) => {
+        if (!c.signal.aborted) setSaved(r.saved === true);
+      })
+      .catch(() => {});
     return () => c.abort();
-  }, [token]);
+  }, [token, artifactId]);
   function clear() {
     request.current?.abort();
     audio.current?.pause();
@@ -97,7 +116,7 @@ export default function ServerAudio({
     setPosition(0);
     setBusy(false);
   }
-  async function generate() {
+  async function generate(restore = false) {
     if (request.current && busy) return;
     const controller = new AbortController();
     request.current = controller;
@@ -105,7 +124,9 @@ export default function ServerAudio({
     setError("");
     try {
       const response = await fetch(`/v1/study-artifacts/${artifactId}/audio`, {
-        ...json({ consent: true }),
+        ...(restore
+          ? { method: "GET" }
+          : json({ consent: true, save: retain })),
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
@@ -139,11 +160,28 @@ export default function ServerAudio({
       setUrl(nextUrl);
       setCues(markers);
       setPosition(0);
+      if (!restore && retain) setSaved(true);
     } catch (e) {
       if (!controller.signal.aborted)
         setError(e instanceof Error ? e.message : "تعذر تنزيل الصوت");
     } finally {
       if (request.current === controller) setBusy(false);
+    }
+  }
+  async function deleteSaved() {
+    if (!window.confirm("حذف التسجيل المحفوظ؟ لن تُحذف النسخ المنزلة.")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/v1/study-artifacts/${artifactId}/audio`, token, {
+        method: "DELETE",
+      });
+      setSaved(false);
+      clear();
+    } catch {
+      setError("تعذر حذف التسجيل المحفوظ.");
+    } finally {
+      setBusy(false);
     }
   }
   const active = cues.findIndex(
@@ -158,9 +196,10 @@ export default function ServerAudio({
       ) : (
         <>
           <p>
-            التوليد يرسل نص الحوار إلى مزود الصوت الذي يحدده المشغل، وقد تترتب
-            عليه تكلفة. متاح لمالك الدفتر فقط مع حدود للطلبات. الملف متاح هنا
-            مؤقتًا ولا يُحفظ على الخادم؛ النسخة المنزلة لن تُمحى عند حذف الدفتر.
+            {external
+              ? "التوليد يرسل النص لمزود خارجي وقد تترتب تكلفة."
+              : "توليد محلي آلي عبر eSpeak NG، دون إرسال النص لخدمة صوت خارجية. الصوت اصطناعي وليس صوتين بشريين أو ضمان لهجة."}{" "}
+            متاح للمالك فقط. الحفظ اختياري؛ النسخ المنزلة لا تُسحب.
           </p>
           <label>
             <input
@@ -169,11 +208,22 @@ export default function ServerAudio({
               disabled={busy}
               onChange={(e) => setChecked(e.target.checked)}
             />
-            أوافق على إرسال نص الحوار للمزود الخارجي لتوليد ملف صوتي
+            {external
+              ? "أوافق على إرسال نص الحوار للمزود الخارجي لتوليد ملف صوتي"
+              : "أوافق على توليد ملف صوتي محلي من نص الحوار"}
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={retain}
+              disabled={busy || saved}
+              onChange={(e) => setRetain(e.target.checked)}
+            />
+            أوافق على حفظ التسجيل في قاعدة بيانات الدفتر لاستعادته لاحقًا
           </label>
           <button
             type="button"
-            disabled={!checked || busy || !!url}
+            disabled={!checked || busy || !!url || saved}
             onClick={() => void generate()}
           >
             {busy ? "جارٍ توليد الصوت…" : "توليد ملف WAV"}
@@ -184,6 +234,27 @@ export default function ServerAudio({
             </button>
           )}
         </>
+      )}
+      {saved && (
+        <div className="tools-row">
+          <span>يوجد تسجيل محفوظ خاص بالمالك</span>
+          {!url && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void generate(true)}
+            >
+              تحميل التسجيل المحفوظ
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void deleteSaved()}
+          >
+            حذف التسجيل المحفوظ
+          </button>
+        </div>
       )}
       {url && (
         <>

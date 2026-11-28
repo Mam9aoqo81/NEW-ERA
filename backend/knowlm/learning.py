@@ -419,8 +419,14 @@ def register_learning(app, db, current_user, owned, readable=None):
 
     @app.get('/v1/notebooks/{notebook_id}/study-artifacts')
     def artifacts(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
-        readable(notebook_id, user_id, session)
-        return [artifact_json(a) for a in session.scalars(select(StudyArtifact).where(StudyArtifact.notebook_id == notebook_id).order_by(StudyArtifact.created_at.desc()).limit(30))]
+        notebook = readable(notebook_id, user_id, session)
+        statement = select(StudyArtifact).where(StudyArtifact.notebook_id == notebook_id)
+        if notebook.owner_id == user_id:
+            # Keep all five saved audio outputs reachable even after >30 newer outputs.
+            from knowlm.audio import AudioRecording
+            from sqlalchemy import case
+            statement = statement.order_by(case((StudyArtifact.id.in_(select(AudioRecording.artifact_id).where(AudioRecording.notebook_id == notebook_id)), 0), else_=1))
+        return [artifact_json(a) for a in session.scalars(statement.order_by(StudyArtifact.created_at.desc()).limit(30))]
 
     @app.post('/v1/notebooks/{notebook_id}/study-artifacts', status_code=201)
     def generate_artifact(notebook_id: str, body: ArtifactInput, user_id=Depends(current_user), session: Session = Depends(db)):

@@ -18,6 +18,7 @@ jobs:
       KNOWLM_LLM_ENABLED: '0'
       KNOWLM_EMBEDDINGS_ENABLED: '0'
       KNOWLM_OCR_ENABLED: '0'
+      KNOWLM_TTS_ENABLED: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -30,7 +31,7 @@ jobs:
           node-version: '22'
       - name: Install locked dependencies
         run: |
-          python -m pip install -r backend/requirements.lock.txt -r backend/requirements-ocr.txt
+          python -m pip install -r backend/requirements.lock.txt -r backend/requirements-ocr.txt -r backend/requirements-audio.txt
           npm ci --prefix frontend
       - name: Install and verify optional OCR models
         run: python -m knowlm.ocr_models --directory "$RUNNER_TEMP/tessdata"

@@ -10,9 +10,11 @@ from knowlm.learning import Card, Deck, Quiz, QuizAttempt, ReviewEvent, ReviewSt
 
 
 def erase_notebook(session, notebook_id):
+    from knowlm.audio import AudioRecording
     from knowlm.canvas import InkBoard
     # Serialize snapshot publication against parent erasure before deleting children.
     session.execute(update(Notebook).where(Notebook.id == notebook_id).values(title=Notebook.title))
+    session.execute(delete(AudioRecording).where(AudioRecording.notebook_id == notebook_id).execution_options(synchronize_session=False))
     session.execute(delete(InkBoard).where(InkBoard.notebook_id == notebook_id).execution_options(synchronize_session=False))
     from knowlm.collaboration import Membership, Invitation, RoomMessage
     for model in (RoomMessage, Invitation, Membership):

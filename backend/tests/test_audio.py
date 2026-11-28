@@ -104,3 +104,86 @@ def test_cues_are_measured_from_pcm_frames_not_estimated_text_length():
     assert cues==[{'index':0,'start':0,'end':0.01},{'index':1,'start':0.01,'end':0.02}]
     with wave.open(io.BytesIO(raw),'rb') as f:
         assert cues[-1]['end']==f.getnframes()/f.getframerate()
+
+
+def test_archive_retains_without_regeneration_and_erases_with_notebook(tmp_path):
+    from sqlalchemy.orm import Session
+    from knowlm.audio import AudioRecording
+    app=create_app(f'sqlite:///{tmp_path / "archive.db"}',speech_provider=FakeSpeech())
+    with TestClient(app) as client:
+        owner=auth(client,'archiveowner');other=auth(client,'archiveother');nid=notebook(client,owner)
+        client.post(f'/v1/notebooks/{nid}/sources/text',headers=owner,json={'title':'مصدر','text':'تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.'})
+        artifact=client.post(f'/v1/notebooks/{nid}/study-artifacts',headers=owner,json={'kind':'podcast'}).json()
+        url=f'/v1/study-artifacts/{artifact["id"]}/audio'
+        assert client.get(url+'/status',headers=owner).json()['saved'] is False
+        first=client.post(url,headers=owner,json={'consent':True,'save':True})
+        assert first.status_code==200,first.text
+        assert client.get(url+'/status',headers=owner).json()['saved'] is True
+        assert client.get(url,headers=owner).content==first.content
+        assert client.get(url,headers=other).status_code==404
+        assert client.delete(url,headers=other).status_code==404
+        assert client.post(url,headers=owner,json={'consent':True,'save':True}).status_code==409
+        assert client.delete(url,headers=owner).status_code==204
+        assert client.get(url,headers=owner).status_code==404
+        assert client.post(url,headers=owner,json={'consent':True,'save':True}).status_code==200
+        assert client.delete(f'/v1/notebooks/{nid}',headers=owner).status_code==204
+        with Session(app.state.engine) as session: assert session.get(AudioRecording,artifact['id']) is None
+    app.state.engine.dispose()
+
+
+def test_real_local_arabic_and_english_speech_is_non_silent_and_distinct(monkeypatch):
+    pytest.importorskip('espeakng_loader')
+    import array
+    from knowlm.audio import LocalSpeechProvider
+    monkeypatch.delenv('PYTHONPATH',raising=False)
+    provider=LocalSpeechProvider()
+    outputs=[]
+    for text in ['هذا صوت عربي محلي من مصادر المذاكرة.', 'This is a local English study voice.']:
+        for speaker in ['host','reader']:
+            params,data=pcm(provider.render(text,speaker,10))
+            assert params==(1,2,22050)
+            samples=array.array('h',data)
+            assert len(samples)>22050 and max(abs(x) for x in samples)>100
+            outputs.append(data)
+    assert outputs[0]!=outputs[1] and outputs[2]!=outputs[3]
+
+
+def test_saved_audio_quota_and_account_erasure(tmp_path,monkeypatch):
+    monkeypatch.setenv('KNOWLM_AUDIO_PER_MINUTE','100')
+    from sqlalchemy.orm import Session
+    from sqlalchemy import select,func
+    from knowlm.audio import AudioRecording
+    provider=FakeSpeech()
+    app=create_app(f'sqlite:///{tmp_path / "quota.db"}',speech_provider=provider)
+    with TestClient(app) as client:
+        owner=auth(client,'quota_audio');nid=notebook(client,owner)
+        client.post(f'/v1/notebooks/{nid}/sources/text',headers=owner,json={'title':'مصدر','text':'تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.'})
+        urls=[]
+        for i in range(6):
+            artifact=client.post(f'/v1/notebooks/{nid}/study-artifacts',headers=owner,json={'kind':'podcast'}).json()
+            urls.append(f'/v1/study-artifacts/{artifact["id"]}/audio')
+            response=client.post(urls[-1],headers=owner,json={'consent':True,'save':True})
+            assert response.status_code==(200 if i<5 else 409),response.text
+        assert len(provider.calls)==10  # Sixth request rejected BEFORE any TTS work.
+        assert client.post('/v1/auth/delete-account',headers=owner,json={'password':'secure-password-123'}).status_code==204
+        with Session(app.state.engine) as session:
+            assert session.scalar(select(func.count()).select_from(AudioRecording))==0
+    app.state.engine.dispose()
+
+
+def test_old_saved_audio_stays_reachable_in_output_selector(tmp_path):
+    from sqlalchemy.orm import Session
+    from knowlm.learning import StudyArtifact
+    from knowlm.audio import AudioRecording
+    app=create_app(f'sqlite:///{tmp_path / "older.db"}',speech_provider=FakeSpeech())
+    with TestClient(app) as client:
+        owner=auth(client,'olderaudio');nid=notebook(client,owner)
+        with Session(app.state.engine) as session:
+            old=StudyArtifact(notebook_id=nid,kind='podcast',blocks=[]);session.add(old);session.flush()
+            old_id=old.id
+            session.add(AudioRecording(artifact_id=old_id,notebook_id=nid,data=wav(),byte_count=len(wav()),cues=[]))
+            session.add_all([StudyArtifact(notebook_id=nid,kind='briefing',blocks=[]) for _ in range(35)])
+            session.commit()
+        items=client.get(f'/v1/notebooks/{nid}/study-artifacts',headers=owner).json()
+        assert len(items)==30 and items[0]['id']==old_id
+    app.state.engine.dispose()

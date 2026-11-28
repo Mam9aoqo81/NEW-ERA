@@ -19,15 +19,16 @@ it("requires separate external consent and displays generation errors without au
     name: "توليد ملف WAV",
   });
   expect(button).toBeDisabled();
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledTimes(2);
   const user = userEvent.setup();
-  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByLabelText(/أوافق على إرسال نص الحوار/));
   await user.click(button);
   await screen.findByRole("alert");
   expect(screen.getByRole("alert")).toHaveTextContent("انتظر دقيقة");
-  expect(fetcher).toHaveBeenCalledTimes(2);
-  expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual({
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(JSON.parse(String(fetcher.mock.calls[2][1]?.body))).toEqual({
     consent: true,
+    save: false,
   });
 });
 it("shows disabled environment without offering a fake download", async () => {
@@ -78,7 +79,7 @@ it("uses one generated blob for playback, seeking, citations and download then c
   );
   const user = userEvent.setup();
   await screen.findByRole("button", { name: "توليد ملف WAV" });
-  await user.click(screen.getByRole("checkbox"));
+  await user.click(screen.getByLabelText(/أوافق على إرسال نص الحوار/));
   await user.click(screen.getByRole("button", { name: "توليد ملف WAV" }));
   const link = await screen.findByRole("link", { name: "تنزيل ملف WAV" });
   expect(link).toHaveAttribute("href", "blob:generated");
@@ -88,7 +89,7 @@ it("uses one generated blob for playback, seeking, citations and download then c
   await user.click(screen.getByRole("button", { name: "فتح مرجع الصوت 2" }));
   expect(onCitation).toHaveBeenCalledWith(turns[1].reference);
   expect(pause).toHaveBeenCalled();
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(3);
   await user.click(screen.getByRole("button", { name: "مسح الصوت المؤقت" }));
   expect(revoke).toHaveBeenCalledWith("blob:generated");
   expect(screen.queryByLabelText("مشغل ملف الحوار")).not.toBeInTheDocument();

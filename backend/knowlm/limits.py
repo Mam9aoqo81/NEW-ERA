@@ -76,7 +76,7 @@ class RateLimiter:
             return None
         if path in ('/v1/auth/login','/v1/auth/register'):
             scope = 'auth'
-        elif re.fullmatch(r'/v1/study-artifacts/[^/]+/audio', path):
+        elif method == 'POST' and re.fullmatch(r'/v1/study-artifacts/[^/]+/audio', path):
             scope = 'audio'
         elif path == '/v1/auth/delete-account':
             scope = 'account_delete'

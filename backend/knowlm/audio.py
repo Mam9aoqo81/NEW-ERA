@@ -3,13 +3,22 @@ import io
 import json
 import os
 import struct
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 import time
 import wave
+from datetime import datetime
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, StrictBool
+from sqlalchemy import ForeignKey, LargeBinary, JSON, Integer, String, DateTime, select, func, update
+from sqlalchemy.orm import Mapped, mapped_column
+from knowlm.main import Base, Notebook
+from knowlm.learning import now
 from sqlalchemy.orm import Session
 from knowlm.learning import StudyArtifact
 
@@ -37,6 +46,40 @@ def pcm(raw):
             return params, data
     except (wave.Error, EOFError, ValueError, OverflowError, struct.error):
         raise AudioError('Invalid WAV') from None
+
+
+class LocalSpeechProvider:
+    external_processing = False
+
+    def __init__(self):
+        import espeakng_loader
+        if not os.path.isfile(espeakng_loader.get_library_path()):
+            raise ValueError('Install requirements-audio.txt for local speech')
+
+    def render(self, text, speaker, timeout):
+        try:
+            # Bound child output on disk; never collect unbounded stdout in RAM.
+            with tempfile.TemporaryFile() as output:
+                result = subprocess.run([sys.executable, str(Path(__file__).with_name('tts_child.py'))], input=json.dumps({'text': text, 'speaker': speaker}, ensure_ascii=False).encode(), stdout=output, stderr=subprocess.DEVNULL, timeout=min(timeout, 30), check=False)
+                if result.returncode != 0:
+                    raise AudioError('Local speech failed')
+                output.seek(0)
+                raw = output.read(MAX_BYTES + 1)
+                if len(raw) > MAX_BYTES:
+                    raise AudioError('Local audio too large')
+                return raw
+        except (OSError, subprocess.TimeoutExpired):
+            raise AudioError('Local speech unavailable') from None
+
+
+class AudioRecording(Base):
+    __tablename__ = 'audio_recordings'
+    artifact_id: Mapped[str] = mapped_column(ForeignKey('study_artifacts.id'), primary_key=True)
+    notebook_id: Mapped[str] = mapped_column(ForeignKey('notebooks.id'), index=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    byte_count: Mapped[int] = mapped_column(Integer)
+    cues: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class SpeechProvider:
@@ -67,6 +110,11 @@ class SpeechProvider:
 
 
 def speech_provider_from_env():
+    mode = os.getenv('KNOWLM_TTS_MODE', 'provider')
+    if mode not in ('local', 'provider'):
+        raise ValueError('KNOWLM_TTS_MODE must be local or provider')
+    if mode == 'local':
+        return LocalSpeechProvider() if os.getenv('KNOWLM_TTS_ENABLED', '0') == '1' else None
     if os.getenv('KNOWLM_TTS_ENABLED', '0') != '1':
         return None
     names = ['API_KEY', 'MODEL', 'HOST_VOICE', 'READER_VOICE']
@@ -109,12 +157,47 @@ def render_dialogue(provider, blocks, *, include_cues=False):
 class AudioInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     consent: StrictBool
+    save: StrictBool = False
 
 
 def register_audio(app, db, current_user, owned, provider):
     @app.get('/v1/audio/config')
     def config(user_id=Depends(current_user)):
-        return {'enabled': provider is not None, 'format': 'wav', 'external_processing': True}
+        return {'enabled': provider is not None, 'format': 'wav', 'external_processing': getattr(provider, 'external_processing', True), 'engine': 'local_espeak' if isinstance(provider, LocalSpeechProvider) else 'provider'}
+
+    def artifact_owned(artifact_id, user_id, session):
+        item = session.get(StudyArtifact, artifact_id)
+        if not item:
+            raise HTTPException(404, 'Study output not found')
+        owned(item.notebook_id, user_id, session)
+        return item
+
+    def audio_response(raw, cues):
+        return Response(raw, media_type='audio/wav', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="knowlm-review.wav"', 'X-Content-Type-Options': 'nosniff', 'X-KnowLM-Audio-Cues': json.dumps(cues, separators=(',', ':'))})
+
+    @app.get('/v1/study-artifacts/{artifact_id}/audio/status')
+    def status(artifact_id: str, user_id=Depends(current_user), session: Session=Depends(db)):
+        artifact_owned(artifact_id, user_id, session)
+        row = session.execute(select(AudioRecording.byte_count, AudioRecording.created_at).where(AudioRecording.artifact_id == artifact_id)).first()
+        return Response(json.dumps({'saved': row is not None, 'bytes': row[0] if row else 0}), media_type='application/json', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/v1/study-artifacts/{artifact_id}/audio')
+    def saved(artifact_id: str, user_id=Depends(current_user), session: Session=Depends(db)):
+        artifact_owned(artifact_id, user_id, session)
+        row = session.get(AudioRecording, artifact_id)
+        if not row:
+            raise HTTPException(404, 'Saved audio not found')
+        return audio_response(row.data, row.cues)
+
+    @app.delete('/v1/study-artifacts/{artifact_id}/audio', status_code=204)
+    def delete_saved(artifact_id: str, user_id=Depends(current_user), session: Session=Depends(db)):
+        item = artifact_owned(artifact_id, user_id, session)
+        session.execute(update(Notebook).where(Notebook.id == item.notebook_id).values(title=Notebook.title))
+        row = session.get(AudioRecording, artifact_id)
+        if row:
+            session.delete(row)
+        session.commit()
+        return Response(status_code=204, headers={'Cache-Control': 'no-store'})
 
     @app.post('/v1/study-artifacts/{artifact_id}/audio')
     def audio(artifact_id: str, body: AudioInput, user_id=Depends(current_user), session: Session=Depends(db)):
@@ -128,6 +211,12 @@ def register_audio(app, db, current_user, owned, provider):
             raise HTTPException(422, 'Study output is not a podcast')
         if provider is None:
             raise HTTPException(503, 'Server speech generation is disabled')
+        if body.save and session.get(AudioRecording, artifact_id):
+            raise HTTPException(409, 'Delete the saved recording before regenerating')
+        if body.save:
+            count, used = session.execute(select(func.count(), func.coalesce(func.sum(AudioRecording.byte_count), 0)).where(AudioRecording.notebook_id == item.notebook_id)).one()
+            if count >= 5 or used >= 32_000_000:
+                raise HTTPException(409, 'Saved audio quota reached; delete older recordings')
         notebook_id, original = item.notebook_id, item.blocks
         # Never hold a notebook write lock during an external request.
         session.rollback()
@@ -141,4 +230,17 @@ def register_audio(app, db, current_user, owned, provider):
         fresh = session.get(StudyArtifact, artifact_id, populate_existing=True)
         if not fresh or fresh.blocks != original:
             raise HTTPException(409, 'Study output changed during speech generation')
-        return Response(raw, media_type='audio/wav', headers={'Cache-Control': 'no-store', 'Content-Disposition': 'attachment; filename="knowlm-review.wav"', 'X-Content-Type-Options': 'nosniff', 'X-KnowLM-Audio-Cues': json.dumps(cues, separators=(',', ':'))})
+        if body.save:
+            session.execute(update(Notebook).where(Notebook.id == notebook_id).values(title=Notebook.title))
+            session.expire_all()
+            owned(notebook_id, user_id, session)
+            if not session.get(StudyArtifact, artifact_id, populate_existing=True):
+                raise HTTPException(404, 'Study output not found')
+            if session.get(AudioRecording, artifact_id, populate_existing=True):
+                raise HTTPException(409, 'Delete the saved recording before regenerating')
+            count, used = session.execute(select(func.count(), func.coalesce(func.sum(AudioRecording.byte_count), 0)).where(AudioRecording.notebook_id == notebook_id)).one()
+            if count >= 5 or used + len(raw) > 32_000_000:
+                raise HTTPException(409, 'Saved audio quota reached; delete older recordings')
+            session.add(AudioRecording(artifact_id=artifact_id, notebook_id=notebook_id, data=raw, byte_count=len(raw), cues=cues))
+            session.commit()
+        return audio_response(raw, cues)

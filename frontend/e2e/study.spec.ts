@@ -1503,7 +1503,7 @@ test("WAV player decodes fixture, seeks by measured cue, downloads once and paus
     .getByRole("button", { name: "مخرجات الدراسة", exact: true })
     .click();
   const region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
-  await region.getByRole("checkbox").check();
+  await region.getByLabel(/أوافق على إرسال نص الحوار/).check();
   await region.getByRole("button", { name: "توليد ملف WAV" }).click();
   const audio = region.getByLabel("مشغل ملف الحوار");
   await expect
@@ -1531,6 +1531,101 @@ test("WAV player decodes fixture, seeks by measured cue, downloads once and paus
     path: `../backend/data/wav-player-${info.project.name}.png`,
   });
   await region.getByRole("button", { name: "مسح الصوت المؤقت" }).click();
+  await expect(audio).toHaveCount(0);
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});
+
+test("real local speech → consented archive → restore → interrupt with source-only question → erase", async ({
+  page,
+}, info) => {
+  const username = `localtts_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  await page.request.post("/v1/auth/register", {
+    data: { username, password },
+  });
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const config = await (
+    await page.request.get("/v1/audio/config", { headers })
+  ).json();
+  test.skip(
+    config.engine !== "local_espeak" || !config.enabled,
+    "Requires explicitly enabled optional local speech engine",
+  );
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر الصوت المحلي" },
+      })
+    ).json()
+  ).id;
+  const text =
+    "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.";
+  await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+    headers,
+    data: { title: "مصدر الصوت الحقيقي", text },
+  });
+  await page.request.post(`/v1/notebooks/${nid}/study-artifacts`, {
+    headers,
+    data: { kind: "podcast" },
+  });
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  let region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
+  await region.getByLabel("أوافق على توليد ملف صوتي محلي من نص الحوار").check();
+  await region
+    .getByLabel("أوافق على حفظ التسجيل في قاعدة بيانات الدفتر لاستعادته لاحقًا")
+    .check();
+  await region.getByRole("button", { name: "توليد ملف WAV" }).click();
+  let audio = region.getByLabel("مشغل ملف الحوار");
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.duration))
+    .toBeGreaterThan(2);
+  await expect(region.getByText("يوجد تسجيل محفوظ خاص بالمالك")).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  region = page.getByRole("region", { name: "تنزيل صوت الحوار" });
+  await region.getByRole("button", { name: "تحميل التسجيل المحفوظ" }).click();
+  audio = region.getByLabel("مشغل ملف الحوار");
+  await expect
+    .poll(() => audio.evaluate((el: HTMLAudioElement) => el.duration))
+    .toBeGreaterThan(2);
+  await audio.evaluate((el: HTMLAudioElement) => el.play());
+  const question = page.getByRole("region", { name: "اسأل أثناء الاستماع" });
+  await question.getByLabel("سؤال أثناء الاستماع").fill("البناء الضوئي");
+  expect(await audio.evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
+  await question
+    .getByRole("button", { name: "ابحث في المصادر المحددة" })
+    .click();
+  await expect(
+    question.getByRole("article", { name: "إجابة سؤال الاستماع" }),
+  ).toContainText("البلاستيدات");
+  await question.getByRole("button", { name: /مرجع إجابة الاستماع 1/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await region.screenshot({
+    path: `../backend/data/local-speech-${info.project.name}.png`,
+  });
+  page.once("dialog", (dialog) => dialog.accept());
+  await region.getByRole("button", { name: "حذف التسجيل المحفوظ" }).click();
+  await expect(region.getByText("يوجد تسجيل محفوظ خاص بالمالك")).toHaveCount(0);
   await expect(audio).toHaveCount(0);
   await page.request.delete(`/v1/notebooks/${nid}`, { headers });
 });

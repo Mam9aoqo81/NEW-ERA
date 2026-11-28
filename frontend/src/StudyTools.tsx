@@ -1,3 +1,4 @@
+import PodcastQuestion from "./PodcastQuestion";
 import ServerAudio from "./ServerAudio";
 import Podcast from "./Podcast";
 import { SharePublisher } from "./Sharing";
@@ -1070,6 +1071,13 @@ function Artifacts({
               <Podcast
                 key={current.id}
                 turns={current.blocks}
+                onCitation={onCitation}
+              />
+              <PodcastQuestion
+                key={`question:${current.id}`}
+                notebookId={base.split("/").at(-1)!}
+                token={token}
+                sourceIds={sourceIds}
                 onCitation={onCitation}
               />
               {publish && (
