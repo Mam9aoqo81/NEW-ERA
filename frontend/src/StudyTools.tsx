@@ -1,3 +1,4 @@
+import MindMap, { type StudyGraph } from "./MindMap";
 import {
   useCallback,
   useEffect,
@@ -61,6 +62,7 @@ type Artifact = {
     reference: Citation;
   }[];
   created_at: string;
+  graph?: StudyGraph;
 };
 const message = (e: unknown) =>
   e instanceof Error ? e.message : "تعذّر إكمال العملية.";
@@ -74,6 +76,7 @@ const artifactLabels: Record<string, string> = {
   faq: "أسئلة ومقاطع",
   briefing: "موجز اقتباسي",
   timeline: "تسلسل السنوات المذكورة",
+  mindmap: "خريطة المصادر التفاعلية",
 };
 function Spinner() {
   return <LoaderCircle size={16} className="spin" />;
@@ -86,7 +89,11 @@ function Reference({
   open: (c: Citation) => void;
 }) {
   return value ? (
-    <button className="study-reference" onClick={() => open(value)}>
+    <button
+      type="button"
+      className="study-reference"
+      onClick={() => open(value)}
+    >
       <FileText size={13} /> المرجع: {value.title}
     </button>
   ) : (
@@ -724,7 +731,7 @@ function QuizPanel({
   }
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!quiz) return;
+    if (!quiz || busy || result) return;
     setBusy(true);
     setError("");
     const body = pending.current || {
@@ -989,13 +996,21 @@ function Artifacts({
       {current ? (
         <div className="artifact-blocks">
           <h3>{artifactLabels[current.kind]}</h3>
-          {current.blocks.map((block, i) => (
-            <article key={i}>
-              <h4>{block.heading}</h4>
-              <blockquote dir="auto">{block.text}</blockquote>
-              <Reference value={block.reference} open={onCitation} />
-            </article>
-          ))}
+          {current.kind === "mindmap" && current.graph ? (
+            <MindMap
+              key={current.id}
+              graph={current.graph}
+              onCitation={onCitation}
+            />
+          ) : (
+            current.blocks.map((block, i) => (
+              <article key={i}>
+                <h4>{block.heading}</h4>
+                <blockquote dir="auto">{block.text}</blockquote>
+                <Reference value={block.reference} open={onCitation} />
+              </article>
+            ))
+          )}
         </div>
       ) : (
         <div className="tools-empty">

@@ -104,7 +104,7 @@ class StudyArtifact(Base):
 
 
 class ArtifactInput(BaseModel):
-    kind: Literal['study_guide', 'faq', 'briefing', 'timeline']
+    kind: Literal['study_guide', 'faq', 'briefing', 'timeline', 'mindmap']
     source_ids: list[str] | None = Field(default=None, max_length=100)
 
 
@@ -395,8 +395,24 @@ def register_learning(app, db, current_user, owned):
 
 
     def artifact_json(item):
-        return {'id': item.id, 'kind': item.kind, 'blocks': item.blocks,
-                'method': 'extractive', 'created_at': iso(item.created_at)}
+        result = {'id': item.id, 'kind': item.kind, 'blocks': item.blocks,
+                  'method': 'extractive', 'created_at': iso(item.created_at)}
+        if item.kind == 'mindmap':
+            # Structural containment only: never claim inferred semantic relations.
+            nodes = [{'id': 'root', 'kind': 'root', 'label': 'المصادر المحددة'}]
+            edges, sources = [], set()
+            for index, block in enumerate(item.blocks):
+                ref = block['reference']
+                source_node = 'source:' + ref['source_id']
+                if source_node not in sources:
+                    sources.add(source_node)
+                    nodes.append({'id': source_node, 'kind': 'source', 'label': ref['title']})
+                    edges.append({'from': 'root', 'to': source_node, 'relation': 'contains'})
+                passage_node = 'passage:' + str(index)
+                nodes.append({'id': passage_node, 'kind': 'passage', 'label': block['text'], 'reference': ref})
+                edges.append({'from': source_node, 'to': passage_node, 'relation': 'contains'})
+            result['graph'] = {'nodes': nodes, 'edges': edges, 'relation_semantics': 'source_containment_only'}
+        return result
 
     @app.get('/v1/notebooks/{notebook_id}/study-artifacts')
     def artifacts(notebook_id: str, user_id=Depends(current_user), session: Session = Depends(db)):

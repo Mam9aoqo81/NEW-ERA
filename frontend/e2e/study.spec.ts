@@ -244,6 +244,14 @@ test("source-linked cards, review schedule, saved quiz and study output", async 
     await question.getByRole("radio").first().check();
   await page.getByRole("button", { name: "تصحيح وحفظ النتيجة" }).click();
   await expect(page.locator(".quiz-score")).toContainText("النتيجة محفوظة");
+  const unintendedSubmissions: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/quizzes\/[^/]+\/attempts$/.test(request.url())
+    )
+      unintendedSubmissions.push(request.url());
+  });
   await page
     .locator(".quiz-explanation")
     .first()
@@ -262,13 +270,38 @@ test("source-linked cards, review schedule, saved quiz and study output", async 
   await expect(
     page.locator(".artifact-blocks blockquote").first(),
   ).toBeVisible();
+  await page.getByLabel("نوع المخرج").selectOption("mindmap");
+  await page
+    .getByRole("button", { name: "إنشاء وحفظ من المصادر المحددة" })
+    .click();
+  await expect(page.locator(".map-node").first()).toBeVisible();
+  await page.getByRole("button", { name: "طي الكل", exact: true }).click();
+  await expect(page.locator(".map-node").first()).not.toBeVisible();
+  await page.getByRole("button", { name: "توسيع الكل", exact: true }).click();
+  await page.locator(".map-node").first().click();
+  await page.getByRole("button", { name: /فتح مرجع المقطع/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "العودة إلى المصدر" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth,
     ),
   ).toBe(false);
+  await page.screenshot({
+    path: `../backend/data/mindmap-${info.project.name}.png`,
+    fullPage: true,
+  });
   await page.reload();
   await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مخرجات الدراسة", exact: true })
+    .click();
+  await expect(page.locator(".map-node").first()).toBeVisible();
+  await page
+    .getByRole("button", { name: "البطاقات والاختبارات", exact: true })
+    .click();
   await expect(
     page.getByRole("button", { name: "إظهار الإجابة" }),
   ).toBeVisible();
@@ -278,4 +311,5 @@ test("source-linked cards, review schedule, saved quiz and study output", async 
   await page.getByLabel("اختبار محفوظ").selectOption({ index: 1 });
   await page.getByRole("button", { name: "عرض آخر نتيجة محفوظة" }).click();
   await expect(page.locator(".quiz-score")).toBeVisible();
+  expect(unintendedSubmissions).toEqual([]);
 });

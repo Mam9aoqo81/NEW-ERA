@@ -190,3 +190,65 @@ def test_youtube_flashcards_keep_timestamp_citations(client):
     assert cards[0]['reference']['start_seconds']==15
     assert cards[0]['reference']['page'] is None
     assert cards[0]['reference']['media_url'].endswith('&t=15s')
+
+
+def test_mindmap_graph_is_saved_bounded_and_exactly_source_linked(client):
+    headers, nid, sid = seed(client)
+    second = client.post(f'/v1/notebooks/{nid}/sources/text', headers=headers,
+                         json={'title': 'نص اختباري', 'text': 'هذه فقرة مستقلة تصف دورة الماء وتبخر المياه من البحار والمحيطات.'}).json()['id']
+    path = f'/v1/notebooks/{nid}/study-artifacts'
+    response = client.post(path, headers=headers, json={'kind': 'mindmap', 'source_ids': [sid, second]})
+    assert response.status_code == 201
+    data = response.json(); graph = data['graph']
+    assert graph['relation_semantics'] == 'source_containment_only'
+    assert len(data['blocks']) <= 20
+    nodes = {n['id']: n for n in graph['nodes']}
+    assert len(nodes) == len(graph['nodes'])
+    assert nodes['root']['kind'] == 'root'
+    assert len([n for n in nodes.values() if n['kind'] == 'source']) == 2
+    passages = [n for n in nodes.values() if n['kind'] == 'passage']
+    assert len(passages) == len(data['blocks'])
+    for edge in graph['edges']:
+        assert edge['relation'] == 'contains'
+        assert edge['from'] in nodes and edge['to'] in nodes
+        child = nodes[edge['to']]
+        if child['kind'] == 'passage':
+            assert edge['from'] == 'source:' + child['reference']['source_id']
+            assert child['label'] == child['reference']['quote']
+            assert client.get(child['reference']['url'], headers=headers).status_code == 200
+        else:
+            assert edge['from'] == 'root' and child['kind'] == 'source'
+    assert len(graph['edges']) == len(nodes) - 1
+    assert client.get(path, headers=headers).json()[0] == data
+    # Source selection must also apply to the graph, not only to text blocks.
+    selected = client.post(path, headers=headers, json={'kind': 'mindmap', 'source_ids': [second]}).json()
+    assert [n['id'] for n in selected['graph']['nodes'] if n['kind'] == 'source'] == ['source:' + second]
+    other = auth(client, 'map_outsider')
+    assert client.get(path, headers=other).status_code == 404
+    assert client.post(path, headers=other, json={'kind':'mindmap','source_ids':[sid]}).status_code == 404
+    assert client.post(path, headers=headers, json={'kind':'mindmap','source_ids':[]}).status_code == 422
+
+
+def test_non_map_artifacts_do_not_change_response_shape(client):
+    headers, nid, sid = seed(client)
+    response = client.post(f'/v1/notebooks/{nid}/study-artifacts', headers=headers,
+                           json={'kind':'briefing','source_ids':[sid]})
+    assert response.status_code == 201
+    assert 'graph' not in response.json()
+
+
+def test_youtube_mindmap_uses_timed_private_references(client):
+    headers = auth(client, 'student'); nid = notebook(client, headers)
+    captions = 'WEBVTT\n\n00:00:15.000 --> 00:00:29.000\nتحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية.\n'
+    sid = client.post(f'/v1/notebooks/{nid}/sources/youtube-jobs', headers=headers,
+                      json={'url':'https://youtu.be/aB3dE5gH7jK','captions':captions}).json()['source_id']
+    assert run_once(client.app.state.engine)
+    response = client.post(f'/v1/notebooks/{nid}/study-artifacts', headers=headers,
+                           json={'kind':'mindmap','source_ids':[sid]})
+    assert response.status_code == 201
+    passage = next(n for n in response.json()['graph']['nodes'] if n['kind']=='passage')
+    ref = passage['reference']
+    assert ref['page'] is None and ref['start_seconds'] == 15
+    assert ref['media_url'].endswith('&t=15s')
+    assert client.get(ref['url'], headers=headers).status_code == 200
+    assert client.get(ref['url']).status_code == 401
