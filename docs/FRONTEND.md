@@ -1,4 +1,4 @@
-# KnowLM web study workspace (0.6)
+# KnowLM web study workspace (0.9)
 
 ## Scope
 
@@ -11,8 +11,10 @@ quality badges or simulated model responses.
 - Create/select private notebooks.
 - Persist and restore complete question/answer/citation snapshots per notebook,
   with keyset pagination, explicit confirmed deletion and idempotent request retries.
-- Add pasted text, enqueue PDF extraction, or ingest a YouTube link with public or explicitly attached timed captions; poll source states every 3.5 seconds.
+- Add pasted text, enqueue PDF or DOCX extraction, or ingest a YouTube link with public or explicitly attached timed captions; poll source states every 3.5 seconds.
 - Video citations show time ranges and a safe external timestamp link, not invented pages. See [YOUTUBE.md](YOUTUBE.md); automatic YouTube access is disabled in the current restricted preview.
+- DOCX citations show extracted paragraph numbers, never invented Word pages. See [DOCX.md](DOCX.md).
+- Study tools include private editable cards, SM-2 reviews, saved server-graded quizzes, extractive artifacts and interactive source-containment maps. See [LEARNING.md](LEARNING.md).
 - Failed jobs show safe error descriptions and offer retry below the attempt cap.
 - New ready sources are selected automatically once; deselecting a source is
   respected on subsequent refreshes. Questions send explicit selected source IDs.
@@ -118,11 +120,11 @@ an English photosynthesis sentence, with no third-party copyrighted content.
 
 ## Verified in this workspace
 
-- 17 frontend component/hook/integration tests.
-- 4 real-browser end-to-end tests (study/PDF and YouTube manual-caption flows, desktop and mobile).
+- 22 frontend component/hook/integration tests.
+- 8 real-browser end-to-end tests (study/PDF, YouTube manual-caption, learning/maps, and DOCX paragraph-reference flows, desktop and mobile).
 - Production build and TypeScript check.
 - npm audit: no known vulnerabilities at the time of verification.
-- Backend suite: 81 passed; one opt-in live YouTube test skipped (network restricted).
+- Backend suite: 119 passed; one opt-in live YouTube test skipped (network restricted).
 
 These checks do not establish production readiness or the quality of a live LLM
 provider. The generated-answer provider remains disabled in this preview.

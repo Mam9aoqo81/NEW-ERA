@@ -313,3 +313,50 @@ test("source-linked cards, review schedule, saved quiz and study output", async 
   await expect(page.locator(".quiz-score")).toBeVisible();
   expect(unintendedSubmissions).toEqual([]);
 });
+
+test("Word upload → private paragraph reference → persisted answer", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "حساب جديد" }).click();
+  await page
+    .getByLabel("اسم المستخدم")
+    .fill(`word_${info.project.name}_${Date.now()}`);
+  await page.getByLabel("كلمة المرور").fill("development-test-password");
+  await page.getByRole("button", { name: "أنشئ مساحة تعلّمك" }).click();
+  await page.getByRole("button", { name: "إنشاء أول دفتر" }).click();
+  await page.getByLabel("اسم الدفتر").fill("دراسة مستند Word");
+  await page.getByRole("button", { name: "إنشاء الدفتر", exact: true }).click();
+  await page.getByRole("button", { name: "إضافة مصدر", exact: true }).click();
+  await page.getByRole("button", { name: "Word", exact: true }).click();
+  await page
+    .getByLabel("ملف Word")
+    .setInputFiles(path.resolve("e2e/fixtures/biology.docx"));
+  await page.getByRole("button", { name: "إضافة إلى مصادري" }).click();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: /^المصادر/ }).click();
+  const source = page.getByRole("checkbox", { name: /biology.docx/ });
+  await expect(source).toBeEnabled({ timeout: 20000 });
+  await expect(source).toBeChecked();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: "اسأل وافهم", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "سؤالك عن المصادر" })
+    .fill("أين تحدث عملية البناء الضوئي؟");
+  await page.getByRole("button", { name: "إرسال السؤال" }).click();
+  await page.getByRole("button", { name: /biology.docx.*فقرة 2/ }).click();
+  await expect(page.getByText("الفقرة 2 · نص Word مستخرج")).toBeVisible();
+  await expect(page.locator(".page-text .highlighted")).toContainText(
+    "البلاستيدات الخضراء",
+  );
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: /biology.docx.*فقرة 2/ }),
+  ).toBeVisible();
+});

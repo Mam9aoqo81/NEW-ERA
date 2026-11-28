@@ -18,7 +18,9 @@ export function isTimed(c: Citation) {
 export function citationLabel(c: Citation) {
   return isTimed(c)
     ? `${formatTime(c.start_seconds!)} – ${formatTime(c.end_seconds ?? c.start_seconds!)}`
-    : `ص ${c.page}`;
+    : c.locator_type === "paragraph"
+      ? `فقرة ${c.paragraph}`
+      : `ص ${c.page}`;
 }
 export function safeVideoLink(url: string | null | undefined) {
   if (!url) return undefined;

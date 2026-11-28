@@ -165,12 +165,13 @@ def schedule(state, rating, at):
 def reference(notebook_id, source, chunk, quote):
     timed = chunk.start_seconds is not None and source.external_url is not None
     return {'chunk_id': chunk.id, 'source_id': source.id, 'title': source.title,
-            'quote': quote, 'page': None if timed else chunk.page,
-            'locator_type': 'timestamp' if timed else 'page',
+            'quote': quote, 'page': None if timed or source.kind == 'docx' else chunk.page,
+            'paragraph': chunk.page if source.kind == 'docx' else None,
+            'locator_type': 'timestamp' if timed else 'paragraph' if source.kind == 'docx' else 'page',
             'start_seconds': chunk.start_seconds, 'end_seconds': chunk.end_seconds,
             'media_url': f'{source.external_url}&t={int(chunk.start_seconds)}s' if timed else None,
             'transcript_origin': source.transcript_origin,
-            'url': f'/v1/notebooks/{notebook_id}/sources/{source.id}/chunks/{chunk.id}' if timed else f'/v1/notebooks/{notebook_id}/sources/{source.id}/pages/{chunk.page}'}
+            'url': f'/v1/notebooks/{notebook_id}/sources/{source.id}/chunks/{chunk.id}' if timed else f'/v1/notebooks/{notebook_id}/sources/{source.id}/paragraphs/{chunk.page}' if source.kind == 'docx' else f'/v1/notebooks/{notebook_id}/sources/{source.id}/pages/{chunk.page}'}
 
 
 def make_cards(rows, notebook_id, count):

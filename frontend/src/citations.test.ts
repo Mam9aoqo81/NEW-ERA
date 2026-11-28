@@ -19,6 +19,19 @@ describe("timestamp citations", () => {
     expect(citationLabel(c)).toBe("0:15 – 0:29");
     expect(citationLabel({ ...c, locator_type: "page", page: 2 })).toBe("ص 2");
   });
+  it("labels Word paragraph locations without inventing page numbers", () => {
+    const ref: Citation = {
+      source_id: "s",
+      chunk_id: "c",
+      title: "Word",
+      quote: "text",
+      page: null,
+      paragraph: 3,
+      locator_type: "paragraph",
+      url: "/v1/paragraph",
+    };
+    expect(citationLabel(ref)).toBe("فقرة 3");
+  });
   it("opens only canonical safe YouTube timestamp links", () => {
     expect(
       safeVideoLink("https://www.youtube.com/watch?v=aB3dE5gH7jK&t=15s"),

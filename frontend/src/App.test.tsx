@@ -62,6 +62,7 @@ function mockApi({
       }
       if (
         path.endsWith("/sources/pdf-jobs") ||
+        path.endsWith("/sources/docx-jobs") ||
         path.endsWith("/sources/youtube-jobs")
       )
         return respond(
@@ -248,6 +249,31 @@ describe("KnowLM study flow", () => {
     expect(
       calls.find((c) => c.path.endsWith("/pdf-jobs"))!.init.body,
     ).toBeInstanceOf(FormData);
+  });
+  it("uploads Word with a paragraph-locator warning to its own job endpoint", async () => {
+    signedIn();
+    const { calls } = mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "إضافة مصدر" }));
+    await user.click(screen.getByRole("button", { name: /^Word$/ }));
+    expect(
+      screen.getByText(/رقم فقرة مستخرجة، وليس صفحة Word الأصلية/),
+    ).toBeInTheDocument();
+    await user.upload(
+      screen.getByLabelText("ملف Word"),
+      new File(["PK"], "study.docx", {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      }),
+    );
+    fireEvent.submit(screen.getByLabelText("ملف Word").closest("form")!);
+    await waitFor(() =>
+      expect(calls.some((c) => c.path.endsWith("/docx-jobs"))).toBe(true),
+    );
+    expect(
+      calls.find((c) => c.path.endsWith("/docx-jobs"))!.init.body,
+    ).toBeInstanceOf(FormData);
+    expect(calls.some((c) => c.path.endsWith("/pdf-jobs"))).toBe(false);
   });
   it("submits a YouTube URL with an explicitly supplied timed caption", async () => {
     signedIn();

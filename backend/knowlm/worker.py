@@ -1,4 +1,4 @@
-"""Durable database-backed PDF and YouTube-caption worker. Run with python -m knowlm.worker.
+"""Durable database-backed PDF, DOCX and YouTube-caption worker. Run with python -m knowlm.worker.
 
 Atomic claims and lease tokens fence stale workers from publishing results.
 No external queue is required at this prototype's scale.
@@ -16,12 +16,13 @@ from sqlalchemy.orm import Session
 
 from knowlm.main import Chunk, IngestionJob, Source, uid
 from knowlm.pdf import ExtractionError, extract_pdf
+from knowlm.docx import extract_docx
 from knowlm.youtube import fetch_transcript, parse_captions, transcript_chunks
 
 logger = logging.getLogger(__name__)
 
 
-def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript):
+def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript, docx_extractor=extract_docx):
     now = datetime.now(timezone.utc)
     with Session(engine) as session:
         # A crashed worker's lease can be reclaimed; limit automatic attempts too.
@@ -60,6 +61,8 @@ def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript):
             request = json.loads(payload)
             segments = parse_captions(request['captions']) if request.get('captions') is not None else youtube_extractor(request['video_id'])
             timed_chunks = transcript_chunks(segments)
+        elif kind == 'docx':
+            pages = docx_extractor(payload)
         else:
             pages = extractor(payload)
     except ExtractionError as exc:

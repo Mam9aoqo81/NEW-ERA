@@ -14,7 +14,8 @@ export type Citation = {
   title: string;
   page: number | null;
   quote: string;
-  locator_type?: "page" | "timestamp";
+  locator_type?: "page" | "timestamp" | "paragraph";
+  paragraph?: number | null;
   start_seconds?: number | null;
   end_seconds?: number | null;
   media_url?: string | null;
@@ -65,6 +66,8 @@ const translations: Record<string, string> = {
   "Authentication required": "سجّل الدخول للمتابعة.",
   "Invalid or expired session": "انتهت جلستك. سجّل الدخول مجددًا.",
   "PDF limit is 10 MiB": "حجم الملف أكبر من 10 ميجابايت.",
+  "Expected a DOCX file": "اختر ملف Word بصيغة DOCX، وليست DOC أو DOCM.",
+  "Document limit is 10 MiB": "الحد الأقصى للملف 10 ميجابايت.",
   "Expected a PDF file": "اختر ملف PDF صالحًا.",
   "Notebook not found": "الدفتر غير موجود أو لا تملك صلاحية الوصول إليه.",
   "Source not found": "المصدر غير متاح.",
@@ -99,6 +102,15 @@ export function jobError(code: string | null | undefined) {
         captions_too_large:
           "الترجمة تتجاوز الحد المسموح: 500 ألف محرف أو 20 ألف مقطع.",
         ocr_required: "الملف مصوّر ويحتاج OCR، وهو غير مدعوم بعد.",
+        unreadable_docx: "تعذّر قراءة مستند Word. جرّب نسخة DOCX أخرى.",
+        unsupported_docx_type:
+          "نوع المستند غير مدعوم. استخدم DOCX عاديًا دون ماكرو.",
+        macro_docx_not_supported: "مستندات الماكرو غير مدعومة.",
+        unsafe_docx_archive:
+          "بنية المستند أو حجمه بعد فك الضغط تتجاوز حدود الأمان.",
+        docx_no_text:
+          "المستند لا يحتوي نصًا في المتن. الصور تحتاج OCR غير المتاح بعد.",
+        docx_text_too_large: "الحد الأقصى 5000 فقرة و500 ألف محرف.",
         unreadable_pdf: "تعذّر قراءة الملف. جرّب نسخة PDF أخرى.",
         encrypted_pdf: "الملف محمي بكلمة مرور.",
         extraction_timeout: "تجاوز استخراج النص الوقت المسموح.",

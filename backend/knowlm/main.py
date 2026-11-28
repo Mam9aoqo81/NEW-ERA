@@ -148,7 +148,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.8.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.9.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     bearer = HTTPBearer(auto_error=False)
 
@@ -288,6 +288,27 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         return {'id': job.id, 'source_id': source.id, 'status': job.status,
                 'status_url': f'/v1/jobs/{job.id}'}
 
+    @app.post('/v1/notebooks/{notebook_id}/sources/docx-jobs', status_code=202)
+    async def enqueue_docx(notebook_id: str, file: UploadFile = File(...), user_id=Depends(current_user), session: Session = Depends(db)):
+        owned(notebook_id, user_id, session)
+        try:
+            raw = await file.read(10 * 1024 * 1024 + 1)
+        finally:
+            await file.close()
+        if len(raw) > 10 * 1024 * 1024:
+            raise HTTPException(413, 'Document limit is 10 MiB')
+        if not (file.filename or '').lower().endswith('.docx') or not raw.startswith(b'PK\x03\x04'):
+            raise HTTPException(415, 'Expected a DOCX file')
+        source = Source(notebook_id=notebook_id, title=(file.filename or 'Document.docx')[:200],
+                        kind='docx', status='processing', content_hash=hashlib.sha256(raw).hexdigest())
+        session.add(source)
+        session.flush()
+        job = IngestionJob(source_id=source.id, payload=raw)
+        session.add(job)
+        session.commit()
+        return {'id': job.id, 'source_id': source.id, 'status': job.status,
+                'status_url': f'/v1/jobs/{job.id}'}
+
     @app.post('/v1/notebooks/{notebook_id}/sources/youtube-jobs', status_code=202)
     def enqueue_youtube(notebook_id: str, body: YouTubeInput, user_id=Depends(current_user), session: Session = Depends(db)):
         owned(notebook_id, user_id, session)
@@ -354,6 +375,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                  'job': {'id': job.id, 'attempts': job.attempts, 'error_code': job.error_code} if job else None}
                 for s, job in rows]
 
+    @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/paragraphs/{page}')
     @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/pages/{page}')
     def get_page(notebook_id: str, source_id: str, page: int, user_id=Depends(current_user), session: Session = Depends(db)):
         owned(notebook_id, user_id, session)
@@ -363,7 +385,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         chunks = session.scalars(select(Chunk).where(Chunk.source_id == source_id, Chunk.page == page).order_by(Chunk.chunk_index)).all()
         if not chunks:
             raise HTTPException(404, 'Page text not found')
-        return {'source_id': source_id, 'page': page, 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
+        return {'source_id': source_id, 'page': None if source.kind == 'docx' else page,
+                'paragraph': page if source.kind == 'docx' else None, 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
 
     @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/chunks/{chunk_id}')
     def read_chunk(notebook_id: str, source_id: str, chunk_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
@@ -372,7 +395,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         chunk = session.get(Chunk, chunk_id)
         if not source or source.notebook_id != notebook_id or not chunk or chunk.source_id != source_id:
             raise HTTPException(404, 'Source not found')
-        return {'source_id': source_id, 'page': None if chunk.start_seconds is not None else chunk.page,
+        return {'source_id': source_id, 'page': None if chunk.start_seconds is not None or source.kind == 'docx' else chunk.page,
+                'paragraph': chunk.page if source.kind == 'docx' else None,
                 'chunks': [{'id': chunk.id, 'text': chunk.text}],
                 'start_seconds': chunk.start_seconds, 'end_seconds': chunk.end_seconds,
                 'transcript_origin': source.transcript_origin}
@@ -443,19 +467,20 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             if not set(body.source_ids) <= allowed:
                 raise HTTPException(404, 'Source not found')
             query = query.where(Source.id.in_(body.source_ids))
-        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text, c.start_seconds, c.end_seconds, s.external_url, s.transcript_origin) for c, s in session.execute(query)]
+        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text, c.start_seconds, c.end_seconds, s.external_url, s.transcript_origin, s.kind) for c, s in session.execute(query)]
         hits = retrieve(body.question, candidates)
         evidence = [hit.evidence for hit in hits]
 
         def citation(item, quote):
             timestamped = item.start_seconds is not None and item.external_url is not None
             return {'chunk_id': item.chunk_id, 'source_id': item.source_id,
-                    'title': item.title, 'page': None if timestamped else item.page, 'quote': quote,
-                    'locator_type': 'timestamp' if timestamped else 'page',
+                    'title': item.title, 'page': None if timestamped or item.kind == 'docx' else item.page, 'quote': quote,
+                    'paragraph': item.page if item.kind == 'docx' else None,
+                    'locator_type': 'timestamp' if timestamped else 'paragraph' if item.kind == 'docx' else 'page',
                     'start_seconds': item.start_seconds, 'end_seconds': item.end_seconds,
                     'media_url': f'{item.external_url}&t={int(item.start_seconds)}s' if timestamped else None,
                     'transcript_origin': item.transcript_origin,
-                    'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/chunks/{item.chunk_id}' if timestamped else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
+                    'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/chunks/{item.chunk_id}' if timestamped else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/paragraphs/{item.page}' if item.kind == 'docx' else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
 
         if body.mode == 'grounded' and answer_provider is None:
             raise HTTPException(503, 'Generated mode is not configured; use extractive mode')

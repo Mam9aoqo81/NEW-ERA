@@ -43,6 +43,7 @@ class Evidence:
     end_seconds: float | None = None
     external_url: str | None = None
     transcript_origin: str | None = None
+    kind: str = "text"
 
 
 @dataclass(frozen=True)

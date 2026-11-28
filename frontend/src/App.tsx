@@ -912,9 +912,11 @@ function Workspace({
                         <small>
                           {s.kind === "pdf"
                             ? "PDF"
-                            : s.kind === "youtube"
-                              ? "YouTube"
-                              : "نص"}{" "}
+                            : s.kind === "docx"
+                              ? "Word · فقرات"
+                              : s.kind === "youtube"
+                                ? "YouTube"
+                                : "نص"}{" "}
                           <span>·</span>{" "}
                           {s.status === "ready"
                             ? "جاهز للدراسة"
@@ -955,7 +957,7 @@ function Workspace({
                 <Upload size={20} />
               </span>
               <strong>أضف مساحة جديدة للمعرفة</strong>
-              <small>PDF أو YouTube أو نصوصك</small>
+              <small>PDF أو Word أو YouTube أو نصوصك</small>
               <b>
                 <Plus size={14} /> إضافة مصدر
               </b>
@@ -1298,7 +1300,7 @@ function AddSource({
   close: () => void;
   done: () => void;
 }) {
-  const [type, setType] = useState<"pdf" | "text" | "youtube">("pdf"),
+  const [type, setType] = useState<"pdf" | "docx" | "text" | "youtube">("pdf"),
     [videoUrl, setVideoUrl] = useState(""),
     [manualCaptions, setManualCaptions] = useState(false),
     [youtubeAuto, setYoutubeAuto] = useState<boolean | null>(null),
@@ -1354,7 +1356,7 @@ function AddSource({
           throw new Error("الحد الأقصى لحجم الملف 10 ميجابايت.");
         const data = new FormData();
         data.append("file", file);
-        await api(`/v1/notebooks/${notebookId}/sources/pdf-jobs`, token, {
+        await api(`/v1/notebooks/${notebookId}/sources/${type}-jobs`, token, {
           method: "POST",
           body: data,
         });
@@ -1372,9 +1374,21 @@ function AddSource({
       <div className="auth-switch">
         <button
           className={type === "pdf" ? "active" : ""}
-          onClick={() => setType("pdf")}
+          onClick={() => {
+            setType("pdf");
+            setFile(null);
+          }}
         >
           <FileText size={16} /> ملف PDF
+        </button>
+        <button
+          className={type === "docx" ? "active" : ""}
+          onClick={() => {
+            setType("docx");
+            setFile(null);
+          }}
+        >
+          <FileText size={16} /> Word
         </button>
         <button
           className={type === "text" ? "active" : ""}
@@ -1390,23 +1404,32 @@ function AddSource({
         </button>
       </div>
       <form onSubmit={submit}>
-        {type === "pdf" ? (
+        {type === "pdf" || type === "docx" ? (
           <>
             <label className="file-picker">
               <Upload size={28} />
               <strong>{file?.name || "اختر ملفًا من جهازك"}</strong>
-              <span>PDF نصي · حتى 10 ميجابايت و200 صفحة</span>
+              <span>
+                {type === "docx"
+                  ? "DOCX · حتى 10 ميجابايت و5000 فقرة"
+                  : "PDF نصي · حتى 10 ميجابايت و200 صفحة"}
+              </span>
               <input
-                aria-label="ملف PDF"
+                aria-label={type === "docx" ? "ملف Word" : "ملف PDF"}
                 type="file"
-                accept="application/pdf,.pdf"
+                accept={
+                  type === "docx"
+                    ? ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    : "application/pdf,.pdf"
+                }
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
                 required
               />
             </label>
             <p className="field-hint">
-              تتم المعالجة في الخلفية. الملفات المصوّرة والمحمية غير مدعومة
-              حاليًا.
+              {type === "docx"
+                ? "نستخرج فقرات المتن والجداول فقط، وليس الصور أو الهوامش أو التعليقات. المرجع رقم فقرة مستخرجة، وليس صفحة Word الأصلية. ملفات DOC وDOCM غير مدعومة."
+                : "تتم المعالجة في الخلفية. الملفات المصوّرة والمحمية غير مدعومة حاليًا."}
             </p>
           </>
         ) : type === "youtube" ? (
@@ -1578,6 +1601,8 @@ function CitationViewer({
                 توقيت المقطع <bdi dir="ltr">{citationLabel(citation)}</bdi> · نص
                 الفيديو
               </>
+            ) : citation.locator_type === "paragraph" ? (
+              <>الفقرة {citation.paragraph} · نص Word مستخرج</>
             ) : (
               <>الصفحة {citation.page} · نص مستخرج</>
             )}
@@ -1587,7 +1612,9 @@ function CitationViewer({
       <p className="field-hint">
         {isTimed(citation)
           ? "الاستشهاد يشير إلى توقيت المقطع في نص الفيديو، وليس إلى تحليل الصور أو الصوت مباشرة."
-          : "هذا عرض للمقاطع النصية، وليس للملف الأصلي. قد تتداخل المقاطع."}
+          : citation.locator_type === "paragraph"
+            ? "المرجع رقم فقرة في متن Word المستخرج، وليس رقم صفحة أو موضعًا مضمونًا في تخطيط الملف الأصلي."
+            : "هذا عرض للمقاطع النصية، وليس للملف الأصلي. قد تتداخل المقاطع."}
       </p>
       {isTimed(citation) && citation.transcript_origin === "user_captions" && (
         <p className="external-warning">
