@@ -1,0 +1,37 @@
+{
+  "description": "Small authored regression set, not a benchmark of general academic accuracy. Sources are synthetic and intentionally short.",
+  "sources": [
+    {"id":"ar-biology","language":"ar","text":"تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء. تستخدم النباتات ضوء الشمس لإنتاج الغذاء."},
+    {"id":"ar-water","language":"ar","text":"تتبخر المياه عند اكتساب الحرارة، ثم يتكثف بخار الماء عند التبريد لتتكون قطرات."},
+    {"id":"ar-history","language":"ar","text":"افتتحت قناة السويس للملاحة سنة 1869، وتربط البحر المتوسط بالبحر الأحمر."},
+    {"id":"ar-cells","language":"ar","text":"تحمل النواة المادة الوراثية داخل الخلية. يساعد الغشاء الخلوي في تنظيم مرور المواد."},
+    {"id":"en-biology","language":"en","text":"Photosynthesis uses sunlight to produce food. Chloroplasts contain chlorophyll."},
+    {"id":"en-physics","language":"en","text":"Electrical resistance is measured in ohms. Current is measured in amperes."},
+    {"id":"en-computing","language":"en","text":"A database transaction groups operations into a single unit. Atomicity means all operations succeed or none do."},
+    {"id":"en-history","language":"en","text":"The Suez Canal opened in 1869. It connects the Mediterranean Sea and the Red Sea."}
+  ],
+  "cases": [
+    {"id":"ar01","language":"ar","question":"أين تحدث عملية البناء الضوئي؟","expected":["ar-biology"]},
+    {"id":"ar02","language":"ar","question":"البِناء الضَّوئي","expected":["ar-biology"]},
+    {"id":"ar03","language":"ar","question":"ماذا تحمل النواة؟","expected":["ar-cells"]},
+    {"id":"ar04","language":"ar","question":"الغشاء الخلوي","expected":["ar-cells"]},
+    {"id":"ar05","language":"ar","question":"قناة السويس","expected":["ar-history"]},
+    {"id":"ar06","language":"ar","question":"تكثف بخار الماء","expected":["ar-water"]},
+    {"id":"ar07","language":"ar","question":"البحر المتوسط","expected":["ar-history"]},
+    {"id":"ar08","language":"ar","question":"الشمس النباتات","expected":["ar-biology"]},
+    {"id":"ar09","language":"ar","question":"ميكانيكا الكم","expected":[]},
+    {"id":"ar10","language":"ar","question":"ما هي","expected":[]},
+    {"id":"ar11","language":"ar","question":"عاصمة اليابان","expected":[]},
+    {"id":"en01","language":"en","question":"What uses sunlight?","expected":["en-biology"]},
+    {"id":"en02","language":"en","question":"electrical resistance","expected":["en-physics"]},
+    {"id":"en03","language":"en","question":"database transaction atomicity","expected":["en-computing"]},
+    {"id":"en04","language":"en","question":"What is measured in amperes?","expected":["en-physics"]},
+    {"id":"en05","language":"en","question":"chloroplasts chlorophyll","expected":["en-biology"]},
+    {"id":"en06","language":"en","question":"Mediterranean Sea","expected":["en-history"]},
+    {"id":"en07","language":"en","question":"What opened in 1869?","expected":["en-history"]},
+    {"id":"en08","language":"en","question":"quantum entanglement","expected":[]},
+    {"id":"en09","language":"en","question":"what is the","expected":[]},
+    {"id":"en10","language":"en","question":"capital of Japan","expected":[]},
+    {"id":"mixed01","language":"mixed","question":"1869","expected":["ar-history","en-history"]}
+  ]
+}
