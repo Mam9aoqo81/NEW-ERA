@@ -1088,6 +1088,12 @@ function Workspace({
                         </small>
                       </span>
                     </label>
+                    {!!s.ocr_pages?.length && (
+                      <p className="transcript-provenance">
+                        OCR محلي · صفحات {s.ocr_pages.join("، ")} · راجع الأصل
+                        لاحتمال أخطاء القراءة
+                      </p>
+                    )}
                     {s.kind === "youtube" && (
                       <p className="transcript-provenance">
                         {s.transcript_origin === "user_captions"
@@ -1662,7 +1668,7 @@ function AddSource({
               <span>
                 {type === "docx"
                   ? "DOCX · حتى 10 ميجابايت و5000 فقرة"
-                  : "PDF نصي · حتى 10 ميجابايت و200 صفحة"}
+                  : "PDF · حتى 10 ميجابايت و200 صفحة"}
               </span>
               <input
                 aria-label={type === "docx" ? "ملف Word" : "ملف PDF"}
@@ -1679,7 +1685,7 @@ function AddSource({
             <p className="field-hint">
               {type === "docx"
                 ? "نستخرج فقرات المتن والجداول فقط، وليس الصور أو الهوامش أو التعليقات. المرجع رقم فقرة مستخرجة، وليس صفحة Word الأصلية. ملفات DOC وDOCM غير مدعومة."
-                : "تتم المعالجة في الخلفية. الملفات المصوّرة والمحمية غير مدعومة حاليًا."}
+                : "تتم المعالجة في الخلفية. قراءة الصفحات المصوّرة تحتاج OCR محليًا مفعّلًا لدى المشغّل (حتى 10 صفحات مصوّرة). الملفات المحمية غير مدعومة."}
             </p>
           </>
         ) : type === "youtube" ? (
@@ -1866,6 +1872,13 @@ function CitationViewer({
             ? "المرجع رقم فقرة في متن Word المستخرج، وليس رقم صفحة أو موضعًا مضمونًا في تخطيط الملف الأصلي."
             : "هذا عرض للمقاطع النصية، وليس للملف الأصلي. قد تتداخل المقاطع."}
       </p>
+      {citation.ocr && (
+        <p className="external-warning">
+          هذا النص قُرئ آليًا من صورة بواسطة OCR وقد يحتوي أخطاء، خاصة الأرقام
+          والتشكيل والجداول. رقم الصفحة محفوظ، لكن موضع الكلمات غير محدد. راجع
+          الملف الأصلي قبل الاعتماد عليه.
+        </p>
+      )}
       {isTimed(citation) && citation.transcript_origin === "user_captions" && (
         <p className="external-warning">
           هذا النص مرفق يدويًا، ولم يُتحقق من مطابقته للفيديو.

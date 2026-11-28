@@ -23,10 +23,12 @@ function mockApi({
   expired = false,
   history = [],
   semantic = false,
+  ocr = false,
   deleteFails = false,
   deleteResponseLost = false,
 }: {
   semantic?: boolean;
+  ocr?: boolean;
   deleteFails?: boolean;
   deleteResponseLost?: boolean;
   history?: unknown[];
@@ -112,6 +114,7 @@ function mockApi({
           notice: "مقتطفات بحث نصي.",
           citations: [
             {
+              ocr,
               chunk_id: "chunk-1",
               source_id: source.id,
               title: source.title,
@@ -256,6 +259,28 @@ describe("KnowLM study flow", () => {
       "Bearer test-session",
     );
     expect(screen.getByText("إجابة مولّدة · غير مفعّلة")).toBeDisabled();
+  });
+  it("marks OCR sources and warns before relying on a recognized page", async () => {
+    signedIn();
+    mockApi({
+      ocr: true,
+      sources: [{ ...source, kind: "pdf", ocr_pages: [1] }],
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByText(/OCR محلي · صفحات 1/)).toBeVisible();
+    const input = await screen.findByRole("textbox", {
+      name: "سؤالك عن المصادر",
+    });
+    await waitFor(() => expect(input).toBeEnabled());
+    await user.type(input, "البناء الضوئي");
+    await user.click(screen.getByRole("button", { name: "إرسال السؤال" }));
+    await user.click(
+      await screen.findByRole("button", { name: /محاضرة النباتات.*ص 1/ }),
+    );
+    expect(
+      await screen.findByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
+    ).toBeVisible();
   });
   it("disables questions when all sources are deselected", async () => {
     signedIn();

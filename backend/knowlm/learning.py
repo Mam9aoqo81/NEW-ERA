@@ -170,7 +170,7 @@ def reference(notebook_id, source, chunk, quote):
             'locator_type': 'timestamp' if timed else 'paragraph' if source.kind == 'docx' else 'page',
             'start_seconds': chunk.start_seconds, 'end_seconds': chunk.end_seconds,
             'media_url': f'{source.external_url}&t={int(chunk.start_seconds)}s' if timed else None,
-            'transcript_origin': source.transcript_origin,
+            'transcript_origin': source.transcript_origin, 'ocr': chunk.page in (source.ocr_pages or []),
             'url': f'/v1/notebooks/{notebook_id}/sources/{source.id}/chunks/{chunk.id}' if timed else f'/v1/notebooks/{notebook_id}/sources/{source.id}/paragraphs/{chunk.page}' if source.kind == 'docx' else f'/v1/notebooks/{notebook_id}/sources/{source.id}/pages/{chunk.page}'}
 
 

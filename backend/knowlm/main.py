@@ -64,6 +64,7 @@ class Source(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     external_url: Mapped[str | None] = mapped_column(String(512))
     transcript_origin: Mapped[str | None] = mapped_column(String(30))
+    ocr_pages: Mapped[list | None] = mapped_column(JSON)
 
 
 class Chunk(Base):
@@ -159,7 +160,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.15.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.16.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
@@ -208,7 +209,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     def store_source(notebook_id, title, kind, pages, session):
         quota_source(session, notebook_id, limits)
         source = Source(notebook_id=notebook_id, title=title, kind=kind,
-                        content_hash=hashlib.sha256('\f'.join(pages).encode()).hexdigest())
+                        content_hash=hashlib.sha256('\f'.join(pages).encode()).hexdigest(),
+                        ocr_pages=getattr(pages,'ocr_pages',[]))
         session.add(source)
         session.flush()
         for page, text in enumerate(pages, 1):
@@ -228,6 +230,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     def health():
         return {'status': 'ok', 'retrieval_mode': 'bm25_char_rrf', 'llm_configured': answer_provider is not None,
                 'semantic_configured': embedding_provider is not None,
+                'ocr_enabled': os.getenv('KNOWLM_OCR_ENABLED', '0') == '1',
                 'youtube_auto_fetch_enabled': os.getenv('KNOWLM_YOUTUBE_FETCH_ENABLED', '1') == '1'}
 
     @app.post('/v1/auth/register', status_code=201)
@@ -443,7 +446,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         rows = session.execute(select(Source, IngestionJob).outerjoin(
             IngestionJob, IngestionJob.source_id == Source.id).where(Source.notebook_id == notebook_id))
         return [{'id': s.id, 'title': s.title, 'kind': s.kind, 'status': s.status,
-                 'external_url': s.external_url, 'transcript_origin': s.transcript_origin,
+                 'external_url': s.external_url, 'transcript_origin': s.transcript_origin, 'ocr_pages': s.ocr_pages or [],
                  'job': {'id': job.id, 'attempts': job.attempts, 'error_code': job.error_code} if job else None}
                 for s, job in rows]
 
@@ -458,7 +461,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         if not chunks:
             raise HTTPException(404, 'Page text not found')
         return {'source_id': source_id, 'page': None if source.kind == 'docx' else page,
-                'paragraph': page if source.kind == 'docx' else None, 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
+                'paragraph': page if source.kind == 'docx' else None, 'ocr': page in (source.ocr_pages or []), 'chunks': [{'id': c.id, 'text': c.text} for c in chunks]}
 
     @app.get('/v1/notebooks/{notebook_id}/sources/{source_id}/chunks/{chunk_id}')
     def read_chunk(notebook_id: str, source_id: str, chunk_id: str, user_id=Depends(current_user), session: Session = Depends(db)):
@@ -545,7 +548,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
             if not set(body.source_ids) <= allowed:
                 raise HTTPException(404, 'Source not found')
             query = query.where(Source.id.in_(body.source_ids))
-        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text, c.start_seconds, c.end_seconds, s.external_url, s.transcript_origin, s.kind) for c, s in session.execute(query)]
+        candidates = [Evidence(c.id, s.id, s.title, c.page, c.text, c.start_seconds, c.end_seconds, s.external_url, s.transcript_origin, s.kind, c.page in (s.ocr_pages or [])) for c, s in session.execute(query)]
         retrieval_mode = 'bm25_char_rrf'
         if body.semantic_consent:
             if embedding_provider is None:
@@ -567,7 +570,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                     'locator_type': 'timestamp' if timestamped else 'paragraph' if item.kind == 'docx' else 'page',
                     'start_seconds': item.start_seconds, 'end_seconds': item.end_seconds,
                     'media_url': f'{item.external_url}&t={int(item.start_seconds)}s' if timestamped else None,
-                    'transcript_origin': item.transcript_origin,
+                    'transcript_origin': item.transcript_origin, 'ocr': item.ocr,
                     'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/chunks/{item.chunk_id}' if timestamped else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/paragraphs/{item.page}' if item.kind == 'docx' else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
 
         if body.mode == 'grounded' and evidence:

@@ -90,6 +90,7 @@ def run_once(engine, extractor=extract_pdf, youtube_extractor=fetch_transcript, 
         source = session.get(Source, job.source_id)
         source.status = 'failed' if error else 'ready'
         if not error:
+            source.ocr_pages = getattr(pages,'ocr_pages',[])
             session.execute(delete(Chunk).where(Chunk.source_id == source.id))
             for page_number, text in enumerate(pages, 1):
                 for index, start in enumerate(range(0, len(text), 900)):

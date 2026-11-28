@@ -784,3 +784,77 @@ test("recipient saves independent cards and submits a report without gaining sou
     page.getByText("سؤال مستقل", { exact: true }).first(),
   ).toBeVisible();
 });
+
+test("local Arabic/English scanned PDF → OCR page 2 → persisted private citation", async ({
+  page,
+}, info) => {
+  const health = await (await page.request.get("/health")).json();
+  test.skip(
+    !health.ocr_enabled,
+    "Requires the optional local OCR worker and models",
+  );
+  const username = `ocr_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  await page.request.post("/v1/notebooks", {
+    headers,
+    data: { title: "قراءة صورة عربية وإنجليزية" },
+  });
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    token,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "إضافة مصدر", exact: true }).click();
+  await page
+    .getByLabel("ملف PDF", { exact: true })
+    .setInputFiles(path.resolve("../backend/tests/fixtures/ocr-bilingual.pdf"));
+  await page.getByRole("button", { name: "إضافة إلى مصادري" }).click();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: /^المصادر/ }).click();
+  await expect(
+    page.getByRole("checkbox", { name: /ocr-bilingual.pdf/ }),
+  ).toBeEnabled({ timeout: 25000 });
+  await expect(page.getByText(/OCR محلي · صفحات 2/)).toBeVisible();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: "اسأل وافهم", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "سؤالك عن المصادر" })
+    .fill("النباتات الشمس");
+  await page.getByRole("button", { name: "إرسال السؤال" }).click();
+  await page.getByRole("button", { name: /ocr-bilingual.pdf.*ص 2/ }).click();
+  await expect(
+    page.getByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
+  ).toBeVisible();
+  await expect(page.locator(".page-text .highlighted")).toContainText("الشمس");
+  await expect(page.locator(".page-text")).toContainText("Photosynthesis");
+  await page.screenshot({
+    path: `../backend/data/ocr-${info.project.name}.png`,
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth,
+    ),
+  ).toBe(false);
+  await page.getByRole("button", { name: "إغلاق", exact: true }).click();
+  await page.reload();
+  await page.getByRole("button", { name: /ocr-bilingual.pdf.*ص 2/ }).click();
+  await expect(
+    page.getByText(/هذا النص قُرئ آليًا من صورة بواسطة OCR/),
+  ).toBeVisible();
+});

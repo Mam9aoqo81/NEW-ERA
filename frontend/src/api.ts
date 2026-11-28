@@ -5,10 +5,12 @@ export type Source = {
   kind: string;
   external_url?: string | null;
   transcript_origin?: string | null;
+  ocr_pages?: number[];
   status: string;
   job?: { id: string; attempts: number; error_code: string | null } | null;
 };
 export type Citation = {
+  ocr?: boolean;
   chunk_id: string;
   source_id: string;
   title: string;
@@ -135,7 +137,18 @@ export function jobError(code: string | null | undefined) {
           "توقيت الترجمة غير صالح. استخدم SRT أو VTT صالحًا.",
         captions_too_large:
           "الترجمة تتجاوز الحد المسموح: 500 ألف محرف أو 20 ألف مقطع.",
-        ocr_required: "الملف مصوّر ويحتاج OCR، وهو غير مدعوم بعد.",
+        ocr_not_configured:
+          "محرك OCR يحتاج نماذج العربي والإنجليزي لدى مشغّل الخادم.",
+        ocr_unavailable: "مكتبات OCR المحلية غير مثبتة لدى مشغّل الخادم.",
+        ocr_page_limit:
+          "الحد الأقصى 10 صفحات تحتاج OCR في الملف الواحد. قسّم الملف.",
+        ocr_page_too_large: "أبعاد صفحة مصوّرة تتجاوز حد OCR. قلّل حجم الصفحة.",
+        ocr_low_confidence:
+          "لم يثق OCR في قراءة بعض النص. استخدم نسخة أوضح؛ لم تُنشر قراءة جزئية.",
+        ocr_failed: "تعذرت قراءة الملف بمحرك OCR المحلي. جرّب نسخة أوضح.",
+        ocr_invalid_document: "تعذر التحقق من ترتيب صفحات الملف أثناء OCR.",
+        ocr_required:
+          "لم يُعثر على نص قابل للاستخراج؛ قد يحتاج الملف OCR محليًا مفعّلًا أو نسخة أوضح.",
         unreadable_docx: "تعذّر قراءة مستند Word. جرّب نسخة DOCX أخرى.",
         unsupported_docx_type:
           "نوع المستند غير مدعوم. استخدم DOCX عاديًا دون ماكرو.",
