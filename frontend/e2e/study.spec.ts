@@ -1629,3 +1629,125 @@ test("real local speech → consented archive → restore → interrupt with sou
   await expect(audio).toHaveCount(0);
   await page.request.delete(`/v1/notebooks/${nid}`, { headers });
 });
+
+test("shared Pomodoro starts, pauses across accounts and survives reload without viewer controls", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  async function account(username: string) {
+    await page.request.post("/v1/auth/register", {
+      data: { username, password },
+    });
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await account(`focusowner_${suffix}`),
+    viewerName = `focusviewer_${suffix}`,
+    viewerToken = await account(viewerName);
+  const owner = { Authorization: `Bearer ${ownerToken}` },
+    viewer = { Authorization: `Bearer ${viewerToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "دفتر مؤقت الفريق" },
+      })
+    ).json()
+  ).id;
+  const invitation = await (
+    await page.request.post(`/v1/notebooks/${nid}/invitations`, {
+      headers: owner,
+      data: { username: viewerName, role: "viewer", consent: true },
+    })
+  ).json();
+  expect(
+    (
+      await page.request.post("/v1/collaboration/accept", {
+        headers: { ...viewer, "X-KnowLM-Invite": invitation.token },
+        data: { consent: true },
+      })
+    ).status(),
+  ).toBe(200);
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    ownerToken,
+  );
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "مؤقت Pomodoro المشترك 25/5" })
+    .click();
+  const timer = page.getByRole("region", { name: "مؤقت المذاكرة المشترك" });
+  await expect(timer.getByLabel("الوقت المتبقي")).toHaveText("25:00");
+  await timer.getByRole("button", { name: "بدء المؤقت", exact: true }).click();
+  await expect(timer.getByText("المؤقت يعمل", { exact: true })).toBeVisible();
+  const context = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const member = await context.newPage();
+    await member.addInitScript(
+      (t) => sessionStorage.setItem("knowlm-token", t),
+      viewerToken,
+    );
+    await member.goto(new URL("/", page.url()).href);
+    await member
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await member
+      .getByRole("button", { name: "مؤقت Pomodoro المشترك 25/5" })
+      .click();
+    const otherTimer = member.getByRole("region", {
+      name: "مؤقت المذاكرة المشترك",
+    });
+    await expect(
+      otherTimer.getByText("المؤقت يعمل", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      otherTimer.getByRole("button", { name: "بدء المؤقت", exact: true }),
+    ).toHaveCount(0);
+    await expect(otherTimer.getByText(/أنت قارئ/)).toBeVisible();
+    await page.bringToFront();
+    await timer
+      .getByRole("button", { name: "إيقاف المؤقت مؤقتًا", exact: true })
+      .click();
+    await expect(
+      timer.getByText("المؤقت متوقف", { exact: true }),
+    ).toBeVisible();
+    await member.bringToFront();
+    await expect(
+      otherTimer.getByText("المؤقت متوقف", { exact: true }),
+    ).toBeVisible({ timeout: 12000 });
+    const paused = await otherTimer.getByLabel("الوقت المتبقي").textContent();
+    await member.reload();
+    await member
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await member
+      .getByRole("button", { name: "مؤقت Pomodoro المشترك 25/5" })
+      .click();
+    await expect(otherTimer.getByLabel("الوقت المتبقي")).toHaveText(paused!);
+    await otherTimer.screenshot({
+      path: `../backend/data/pomodoro-${info.project.name}.png`,
+    });
+    await page.bringToFront();
+    page.once("dialog", (dialog) => dialog.accept());
+    await timer
+      .getByRole("button", { name: "إعادة ضبط الفترة", exact: true })
+      .click();
+    await expect(timer.getByLabel("الوقت المتبقي")).toHaveText("25:00");
+  } finally {
+    await context.close();
+    await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner });
+  }
+});

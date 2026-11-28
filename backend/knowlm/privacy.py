@@ -14,6 +14,8 @@ def erase_notebook(session, notebook_id):
     from knowlm.canvas import InkBoard
     # Serialize snapshot publication against parent erasure before deleting children.
     session.execute(update(Notebook).where(Notebook.id == notebook_id).values(title=Notebook.title))
+    from knowlm.pomodoro import FocusTimer
+    session.execute(delete(FocusTimer).where(FocusTimer.notebook_id == notebook_id).execution_options(synchronize_session=False))
     session.execute(delete(AudioRecording).where(AudioRecording.notebook_id == notebook_id).execution_options(synchronize_session=False))
     session.execute(delete(InkBoard).where(InkBoard.notebook_id == notebook_id).execution_options(synchronize_session=False))
     from knowlm.collaboration import Membership, Invitation, RoomMessage

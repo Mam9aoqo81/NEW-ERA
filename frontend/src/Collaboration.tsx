@@ -1,3 +1,4 @@
+import Pomodoro from "./Pomodoro";
 import {
   useCallback,
   useEffect,
@@ -181,6 +182,11 @@ export default function Collaboration({
           {settings && (
             <>
               <p>صلاحيتك: {label[settings.role]}</p>
+              <Pomodoro
+                key={notebookId}
+                notebookId={notebookId}
+                token={token}
+              />
               {settings.role === "owner" ? (
                 <>
                   <form onSubmit={invite}>
