@@ -145,6 +145,7 @@ def password_hash(password, salt=None):
 
 
 def create_app(database_url=None, *, initialize_schema=True, answer_provider=None):
+    from knowlm.sharing import register_sharing
     from knowlm.learning import register_learning
     from knowlm.limits import Limits, register_limits, quota_notebook, quota_source
     data = Path(os.getenv('KNOWLM_DATA_DIR', 'backend/data'))
@@ -156,7 +157,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.12.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.13.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
@@ -578,5 +579,6 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 'notice': 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
     register_learning(app, db, current_user, owned)
+    register_sharing(app, db, current_user, owned)
     return app
 

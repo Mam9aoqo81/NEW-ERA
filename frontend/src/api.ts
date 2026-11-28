@@ -37,6 +37,16 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Shared content is unavailable":
+    "النسخة المشتركة غير متاحة: قد يكون الرابط غير صالح أو منتهيًا أو مُلغًى.",
+  "Explicit sharing consent is required":
+    "راجع النص وأكد موافقتك على المشاركة أولًا.",
+  "Content changed since sharing preview":
+    "تغير المحتوى منذ المعاينة. حدّث المعاينة وراجعها قبل النشر.",
+  "Active share quota reached":
+    "لديك 20 رابط مشاركة نشطًا. ألغِ رابطًا قبل إنشاء آخر.",
+  "Share requires 1 to 50 cards":
+    "المشاركة تحتاج مجموعة بها من بطاقة واحدة إلى 50 بطاقة.",
   "Request rate limit reached": "طلبات كثيرة خلال فترة قصيرة.",
   "Request budget temporarily unavailable":
     "تعذّر التحقق من حدود الاستخدام مؤقتًا. حاول مجددًا بعد قليل.",

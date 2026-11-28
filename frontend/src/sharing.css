@@ -1,0 +1,99 @@
+.sharing-owner {
+  margin-block: 12px;
+}
+.sharing-box {
+  margin-block-start: 14px;
+  padding: 20px;
+  border: 1px solid #dce4d6;
+  border-radius: 16px;
+  background: #fafbf7;
+}
+.sharing-box h3 {
+  margin-block: 0 14px;
+}
+.share-preview {
+  max-height: 340px;
+  overflow: auto;
+  margin-block: 18px;
+  background: white;
+  border: 1px solid #e2e6db;
+  border-radius: 12px;
+}
+.share-preview article {
+  padding: 16px;
+  border-block-end: 1px solid #e5e9df;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.share-preview p,
+.share-preview li {
+  line-height: 1.9;
+}
+.sharing-box form {
+  display: grid;
+  gap: 15px;
+  margin-block: 16px;
+}
+.sharing-box .share-consent {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.9;
+}
+.share-consent input {
+  width: auto;
+  margin-block-start: 8px;
+  flex: none;
+}
+.share-list article {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding-block: 12px;
+  border-block-end: 1px solid #e2e6dc;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.shared-page {
+  max-width: 850px;
+  margin: auto;
+  padding: 32px 20px 60px;
+  min-height: 100vh;
+}
+.shared-page header {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-block-end: 30px;
+  color: #66785e;
+  font-size: 13px;
+}
+.shared-page h1 {
+  margin-block: 24px 10px;
+  overflow-wrap: anywhere;
+}
+.shared-page .flashcard {
+  width: 100%;
+  margin-block: 18px;
+}
+.shared-page .tools-row {
+  justify-content: space-between;
+}
+.shared-page .quiz-question {
+  margin-block: 18px;
+}
+@media (max-width: 600px) {
+  .sharing-box {
+    padding: 12px;
+  }
+  .share-list article {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .shared-page {
+    padding: 24px 16px 50px;
+  }
+}

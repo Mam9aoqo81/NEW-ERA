@@ -3,13 +3,17 @@
 This is not cryptographic erasure of SQLite pages, backups or external providers.
 Child-first deletion supports schemas without ON DELETE CASCADE.
 """
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from knowlm.main import ChatTurn, Chunk, IngestionJob, Notebook, Source, User, AuthSession
 from knowlm.learning import Card, Deck, Quiz, QuizAttempt, ReviewEvent, ReviewState, StudyArtifact
 
 
 def erase_notebook(session, notebook_id):
+    # Serialize snapshot publication against parent erasure before deleting children.
+    session.execute(update(Notebook).where(Notebook.id == notebook_id).values(title=Notebook.title))
+    from knowlm.sharing import LearningShare
+    session.execute(delete(LearningShare).where(LearningShare.notebook_id == notebook_id).execution_options(synchronize_session=False))
     sources = select(Source.id).where(Source.notebook_id == notebook_id)
     decks = select(Deck.id).where(Deck.notebook_id == notebook_id)
     cards = select(Card.id).where(Card.deck_id.in_(decks))

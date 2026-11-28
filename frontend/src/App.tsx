@@ -1,3 +1,4 @@
+import SharedLearning from "./Sharing";
 import StudyTools from "./StudyTools";
 import { citationLabel, isTimed, safeVideoLink } from "./citations";
 import { useNotebookChat } from "./useNotebookChat";
@@ -294,6 +295,14 @@ function Auth({ onLogin }: { onLogin: (token: string, user: User) => void }) {
 }
 
 export default function App() {
+  return window.location.pathname === "/share" ? (
+    <SharedLearning />
+  ) : (
+    <PrivateApp />
+  );
+}
+
+function PrivateApp() {
   const [token, setToken] = useState<string | null>(() =>
       sessionStorage.getItem("knowlm-token"),
     ),

@@ -1,3 +1,4 @@
+import { SharePublisher } from "./Sharing";
 import MindMap, { type StudyGraph } from "./MindMap";
 import {
   useCallback,
@@ -250,6 +251,7 @@ export default function StudyTools({
                 <DeckPanel
                   key={chosen}
                   deckId={chosen}
+                  notebookId={notebookId}
                   token={token}
                   onCitation={onCitation}
                 />
@@ -270,10 +272,12 @@ export default function StudyTools({
   );
 }
 function DeckPanel({
+  notebookId,
   deckId,
   token,
   onCitation,
 }: {
+  notebookId: string;
   deckId: string;
   token: string;
   onCitation: (c: Citation) => void;
@@ -394,6 +398,13 @@ function DeckPanel({
   }
   return (
     <div className="deck-panel">
+      <SharePublisher
+        key={deckId}
+        target={`/v1/decks/${deckId}`}
+        notebookId={notebookId}
+        token={token}
+        kind="cards"
+      />
       <div className="practice-tabs">
         <button
           aria-pressed={tab === "practice"}
@@ -437,6 +448,7 @@ function DeckPanel({
         <QuizPanel
           key={deckId}
           deckId={deckId}
+          notebookId={notebookId}
           token={token}
           onCitation={onCitation}
         />
@@ -648,10 +660,12 @@ function DeckPanel({
   );
 }
 function QuizPanel({
+  notebookId,
   deckId,
   token,
   onCitation,
 }: {
+  notebookId: string;
   deckId: string;
   token: string;
   onCitation: (c: Citation) => void;
@@ -798,6 +812,13 @@ function QuizPanel({
       )}
       {quiz && (
         <>
+          <SharePublisher
+            key={quiz.id}
+            target={`/v1/quizzes/${quiz.id}`}
+            notebookId={notebookId}
+            token={token}
+            kind="quiz"
+          />
           <div className="quiz-attempts">
             {attempts.length > 0 && (
               <button

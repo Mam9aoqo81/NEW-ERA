@@ -3,6 +3,7 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import create_engine, pool
 from knowlm.main import Base
+import knowlm.sharing  # register unlisted learning snapshot table
 import knowlm.limits  # register durable request budget tables
 import knowlm.learning  # register learning tables for schema comparison
 

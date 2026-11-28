@@ -519,3 +519,160 @@ test("real per-user question budget displays an Arabic retry message", async ({
     await page.evaluate(() => sessionStorage.getItem("knowlm-token")),
   ).toBe(token);
 });
+
+test("consented card and quiz links work for anonymous visitors and can be revoked", async ({
+  page,
+  browser,
+}, info) => {
+  const username = `share_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر خاص لا يُنشر" },
+      })
+    ).json()
+  ).id;
+  const sid = (
+    await (
+      await page.request.post(`/v1/notebooks/${nid}/sources/text`, {
+        headers,
+        data: {
+          title: "اسم ملف خاص",
+          text: "تحدث عملية البناء الضوئي داخل البلاستيدات الخضراء في الخلايا النباتية. تستخدم النباتات الطاقة الضوئية لتحويل الماء وثاني أكسيد الكربون إلى سكريات.",
+        },
+      })
+    ).json()
+  ).id;
+  const deck = await (
+    await page.request.post(`/v1/notebooks/${nid}/decks/generate`, {
+      headers,
+      data: { title: "مراجعة خاصة", source_ids: [sid] },
+    })
+  ).json();
+  expect(
+    (
+      await page.request.post(`/v1/decks/${deck.id}/quizzes`, {
+        headers,
+        data: { count: 2 },
+      })
+    ).status(),
+  ).toBe(201);
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    token,
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "أدوات المراجعة" }).click();
+  await page
+    .getByRole("button", { name: "مشاركة البطاقات", exact: true })
+    .click();
+  await expect(page.getByLabel("النص الذي سيُنشر")).toContainText("____");
+  await expect(
+    page.getByRole("button", { name: "إنشاء رابط للنسخة المعاينة" }),
+  ).toBeDisabled();
+  await page.getByLabel("عنوان النسخة المشتركة").fill("بطاقات للزائر");
+  await page.getByRole("checkbox", { name: /راجعت النص كاملًا/ }).check();
+  await page
+    .getByRole("button", { name: "إنشاء رابط للنسخة المعاينة" })
+    .click();
+  const cardLink = await page.getByLabel("رابط المشاركة الجديد").inputValue();
+  expect(cardLink).toContain("/share#");
+  const visitor = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const guest = await visitor.newPage();
+    await guest.goto(cardLink);
+    await expect(
+      guest.getByRole("heading", { name: "بطاقات للزائر" }),
+    ).toBeVisible();
+    await guest.getByRole("button", { name: "إظهار الإجابة" }).click();
+    await expect(
+      guest.getByRole("button", { name: "إخفاء الإجابة" }),
+    ).toBeVisible();
+    await expect(guest.getByText("اسم ملف خاص", { exact: true })).toHaveCount(
+      0,
+    );
+    await expect(
+      guest.getByText("دفتر خاص لا يُنشر", { exact: true }),
+    ).toHaveCount(0);
+    expect(
+      await guest.evaluate(() => sessionStorage.getItem("knowlm-token")),
+    ).toBeNull();
+    expect(
+      await guest.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false);
+    await guest.screenshot({
+      path: `../backend/data/shared-${info.project.name}.png`,
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "مشاركة البطاقات", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "اختبار تفاعلي", exact: true })
+      .click();
+    await page.getByLabel("اختبار محفوظ").selectOption({ index: 1 });
+    await page
+      .getByRole("button", { name: "مشاركة الاختبار", exact: true })
+      .click();
+    await page.getByLabel("عنوان النسخة المشتركة").fill("اختبار للزائر");
+    await page.getByRole("checkbox", { name: /راجعت النص كاملًا/ }).check();
+    await page
+      .getByRole("button", { name: "إنشاء رابط للنسخة المعاينة" })
+      .click();
+    const quizLink = await page.getByLabel("رابط المشاركة الجديد").inputValue();
+    await guest.goto(quizLink);
+    await expect(
+      guest.getByRole("heading", { name: "اختبار للزائر" }),
+    ).toBeVisible();
+    for (const field of await guest.locator(".quiz-question").all())
+      await field.getByRole("radio").first().check();
+    await guest.getByRole("button", { name: "تصحيح الاختبار المشترك" }).click();
+    await expect(guest.locator(".quiz-score")).toContainText("غير محفوظة");
+    await page
+      .getByRole("button", { name: "إلغاء رابط: اختبار للزائر" })
+      .click();
+    await page.getByRole("button", { name: "تأكيد إلغاء الرابط" }).click();
+    await expect(
+      page.getByRole("button", { name: "إلغاء رابط: اختبار للزائر" }),
+    ).toHaveCount(0);
+    await guest.reload();
+    await expect(guest.getByRole("alert")).toContainText("غير متاحة");
+    await guest.goto(cardLink);
+    await expect(
+      guest.getByRole("heading", { name: "بطاقات للزائر" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "إلغاء رابط: بطاقات للزائر" })
+      .click();
+    await page.getByRole("button", { name: "تأكيد إلغاء الرابط" }).click();
+    await expect(
+      page.getByRole("button", { name: "إلغاء رابط: بطاقات للزائر" }),
+    ).toHaveCount(0);
+    await guest.reload();
+    await expect(guest.getByRole("alert")).toContainText("غير متاحة");
+  } finally {
+    await visitor.close();
+  }
+});
