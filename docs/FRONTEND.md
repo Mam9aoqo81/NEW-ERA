@@ -1,4 +1,4 @@
-# KnowLM web study workspace (0.10)
+# KnowLM web study workspace (0.11)
 
 ## Scope
 
@@ -120,11 +120,11 @@ an English photosynthesis sentence, with no third-party copyrighted content.
 
 ## Verified in this workspace
 
-- 25 frontend component/hook/integration tests.
-- 8 real-browser end-to-end tests (study/PDF, YouTube manual-caption, learning/maps, and DOCX paragraph-reference flows, desktop and mobile).
+- 27 frontend component/hook/integration tests.
+- 10 real-browser end-to-end tests (study/PDF, YouTube manual-caption, learning/maps, DOCX with notebook deletion, and account deletion/session revocation, desktop and mobile).
 - Production build and TypeScript check.
 - npm audit: no known vulnerabilities at the time of verification.
-- Backend suite: 124 passed; one opt-in live YouTube test skipped (network restricted).
+- Backend suite: 130 passed; one opt-in live YouTube test skipped (network restricted).
 
 These checks do not establish production readiness or the quality of a live LLM
 provider. The generated-answer provider remains disabled in this preview.

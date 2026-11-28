@@ -105,3 +105,89 @@ def test_foreign_keys_reject_late_writes_to_deleted_parent(client):
         assert session.scalar(text('PRAGMA foreign_keys'))==1
         session.add(Source(notebook_id=nid,title='late',kind='text',content_hash='a'*64))
         with pytest.raises(IntegrityError):session.commit()
+
+
+def test_account_erases_all_owned_data_and_sessions_not_other_users(client):
+    owner, other = auth(client,'owner'), auth(client,'other')
+    populate(client,owner);populate(client,owner)
+    populate(client,other)
+    second_token = client.post('/v1/auth/login',json={'username':'owner','password':'secure-password-123'}).json()['access_token']
+    second_headers={'Authorization':f'Bearer {second_token}'}
+    assert client.post('/v1/auth/delete-account',headers=owner,json={'password':'secure-password-123'}).status_code==204
+    assert client.get('/v1/auth/me',headers=owner).status_code==401
+    assert client.get('/v1/auth/me',headers=second_headers).status_code==401
+    assert client.post('/v1/auth/login',json={'username':'owner','password':'secure-password-123'}).status_code==401
+    assert len(client.get('/v1/notebooks',headers=other).json())==1
+    assert client.get('/v1/auth/me',headers=other).status_code==200
+    with Session(client.app.state.engine) as session:
+        assert session.scalar(select(func.count()).select_from(User))==1
+        assert session.scalar(select(func.count()).select_from(AuthSession))==1
+        assert session.scalar(select(func.count()).select_from(Notebook))==1
+        assert session.scalar(select(User.username))=='other'
+        ownerless = session.execute(text('PRAGMA foreign_key_check')).all()
+        assert ownerless==[]
+    # Remaining user can still access every kind of saved learning data.
+    nid=client.get('/v1/notebooks',headers=other).json()[0]['id']
+    assert client.get(f'/v1/notebooks/{nid}/study-artifacts',headers=other).json()
+    assert client.get(f'/v1/notebooks/{nid}/decks',headers=other).json()
+
+
+def test_account_delete_requires_current_password_and_keeps_valid_session(client):
+    headers=auth(client,'owner');populate(client,headers)
+    before=counts(client.app.state.engine)
+    assert client.post('/v1/auth/delete-account',headers=headers,json={'password':'wrong-password'}).status_code==403
+    assert counts(client.app.state.engine)==before
+    assert client.get('/v1/auth/me',headers=headers).status_code==200
+    for body in ({}, {'password':'short'}, {'password':'x'*129}, {'password':'secure-password-123','user_id':'someone-else'}):
+        assert client.post('/v1/auth/delete-account',headers=headers,json=body).status_code==422
+    assert client.post('/v1/auth/delete-account',json={'password':'secure-password-123'}).status_code==401
+    assert counts(client.app.state.engine)==before
+
+
+def test_empty_account_can_be_deleted(client):
+    headers=auth(client,'owner')
+    assert client.post('/v1/auth/delete-account',headers=headers,json={'password':'secure-password-123'}).status_code==204
+    with Session(client.app.state.engine) as session:
+        assert session.scalar(select(func.count()).select_from(User))==0
+        assert session.scalar(select(func.count()).select_from(AuthSession))==0
+
+
+def test_account_deletion_rollback_preserves_all_notebooks_and_sessions(client):
+    from knowlm.privacy import erase_account
+    headers=auth(client,'owner');populate(client,headers);populate(client,headers)
+    engine=client.app.state.engine;before=counts(engine)
+    with Session(engine) as session: user_id=session.scalar(select(User.id))
+    def fail(connection,cursor,statement,parameters,context,executemany):
+        if statement.startswith('DELETE FROM users'):
+            raise RuntimeError('injected failure')
+    event.listen(engine,'before_cursor_execute',fail)
+    try:
+        with pytest.raises(RuntimeError):
+            with Session(engine) as session:
+                erase_account(session,user_id);session.commit()
+    finally:event.remove(engine,'before_cursor_execute',fail)
+    assert counts(engine)==before
+    assert client.get('/v1/auth/me',headers=headers).status_code==200
+
+
+def test_inflight_worker_cannot_publish_after_account_deletion(client):
+    headers=auth(client,'owner');nid=notebook(client,headers)
+    client.post(f'/v1/notebooks/{nid}/sources/pdf-jobs',headers=headers,files={'file':('private.pdf',b'%PDF-private')})
+    def delayed(raw):
+        assert client.post('/v1/auth/delete-account',headers=headers,json={'password':'secure-password-123'}).status_code==204
+        return ['must not reappear']
+    assert run_once(client.app.state.engine,extractor=delayed)
+    assert all(value==0 for value in counts(client.app.state.engine).values())
+    assert client.get('/v1/auth/me',headers=headers).status_code==401
+
+
+def test_auth_validation_never_echoes_plaintext_passwords(client):
+    headers=auth(client,'owner')
+    secret='private-short'
+    for path,body in [('/v1/auth/delete-account',{'password':secret*20}),
+                      ('/v1/auth/login',{'username':'owner','password':'SECRET'}),
+                      ('/v1/auth/register',{'username':'invalid name','password':secret})]:
+        response=client.post(path,headers=headers,json=body)
+        assert response.status_code==422
+        assert secret not in response.text and 'SECRET' not in response.text
+        assert all('input' not in item and 'ctx' not in item for item in response.json()['detail'])

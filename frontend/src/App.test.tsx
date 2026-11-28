@@ -47,6 +47,11 @@ function mockApi({
       if (path === "/v1/auth/register")
         return respond({ id: "user-1", username: "student" }, 201);
       if (path === "/v1/auth/logout") return respond(null, 204);
+      if (path === "/v1/auth/delete-account") {
+        return JSON.parse(String(init.body)).password === "correct-password-123"
+          ? respond(null, 204)
+          : respond({ detail: "Password confirmation failed" }, 403);
+      }
       if (path === "/v1/notebooks/notebook-1" && init.method === "DELETE") {
         if (deleteFails) return respond({ detail: "Deletion failed" }, 503);
         if (deleteResponseLost) {
@@ -298,6 +303,56 @@ describe("KnowLM study flow", () => {
     await user.click(screen.getByRole("button", { name: "حذف الدفتر نهائيًا" }));
     await screen.findByRole("button", { name: "إنشاء أول دفتر" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+  it("reauthenticates before account deletion, clears failed passwords and then signs out", async () => {
+    signedIn();
+    const { calls } = mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(
+      await screen.findByRole("button", { name: /^حذف الحساب$/ }),
+    );
+    const confirm = screen.getByRole("button", {
+      name: "حذف حسابي وكل دفاتري",
+    });
+    expect(confirm).toBeDisabled();
+    await user.type(
+      screen.getByLabelText("اسم المستخدم لتأكيد حذف الحساب"),
+      "student",
+    );
+    await user.type(
+      screen.getByLabelText("كلمة المرور الحالية"),
+      "wrong-password",
+    );
+    await user.click(confirm);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "كلمة المرور غير صحيحة",
+    );
+    expect(screen.getByLabelText("كلمة المرور الحالية")).toHaveValue("");
+    expect(sessionStorage.getItem("knowlm-token")).toBeTruthy();
+    await user.type(
+      screen.getByLabelText("كلمة المرور الحالية"),
+      "correct-password-123",
+    );
+    await user.click(confirm);
+    await screen.findByRole("button", { name: "حساب جديد" });
+    expect(sessionStorage.getItem("knowlm-token")).toBeNull();
+    expect(
+      calls.filter((c) => c.path === "/v1/auth/delete-account"),
+    ).toHaveLength(2);
+  });
+  it("can cancel account deletion without sending a destructive request", async () => {
+    signedIn();
+    const { calls } = mockApi();
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(
+      await screen.findByRole("button", { name: /^حذف الحساب$/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "إلغاء حذف الحساب" }));
+    expect(calls.some((c) => c.path === "/v1/auth/delete-account")).toBe(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("knowlm-token")).toBeTruthy();
   });
   it("uploads a PDF through the background-job endpoint", async () => {
     signedIn();

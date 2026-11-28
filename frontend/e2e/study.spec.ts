@@ -380,3 +380,65 @@ test("Word upload → private paragraph reference → persisted answer", async (
     page.getByRole("button", { name: "إنشاء أول دفتر" }),
   ).toBeVisible({ timeout: 20000 });
 });
+
+test("password-confirmed account deletion revokes all sessions", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "حساب جديد" }).click();
+  const username = `erase_${info.project.name}_${Date.now()}`;
+  const password = "development-test-password";
+  await page.getByLabel("اسم المستخدم").fill(username);
+  await page.getByLabel("كلمة المرور").fill(password);
+  await page.getByRole("button", { name: "أنشئ مساحة تعلّمك" }).click();
+  await page.getByRole("button", { name: "إنشاء أول دفتر" }).click();
+  await page.getByLabel("اسم الدفتر").fill("دفتر سيُحذف مع الحساب");
+  await page.getByRole("button", { name: "إنشاء الدفتر", exact: true }).click();
+  if (info.project.name === "mobile")
+    await page.getByRole("button", { name: /^المصادر/ }).click();
+  await page.getByRole("button", { name: "جرّب بمصدر تعليمي جاهز" }).click();
+  await expect(
+    page.getByRole("checkbox", { name: /البناء الضوئي/ }),
+  ).toBeChecked();
+  const secondSession = await page.request.post("/v1/auth/login", {
+    data: { username, password },
+  });
+  expect(secondSession.status()).toBe(200);
+  const token = (await secondSession.json()).access_token;
+  if (info.project.name === "mobile")
+    await page
+      .getByRole("button", { name: "فتح القائمة", exact: true })
+      .click();
+  await page.getByRole("button", { name: "حذف الحساب", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "حذف حسابي وكل دفاتري" }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "إلغاء حذف الحساب" }).click();
+  await page.getByRole("button", { name: "حذف الحساب", exact: true }).click();
+  await page.getByLabel("اسم المستخدم لتأكيد حذف الحساب").fill(username);
+  await page.getByLabel("كلمة المرور الحالية").fill("wrong-password");
+  await page.getByRole("button", { name: "حذف حسابي وكل دفاتري" }).click();
+  await expect(page.getByRole("alert")).toContainText("كلمة المرور غير صحيحة");
+  await expect(page.getByLabel("كلمة المرور الحالية")).toHaveValue("");
+  await page.getByLabel("كلمة المرور الحالية").fill(password);
+  await page.getByRole("button", { name: "حذف حسابي وكل دفاتري" }).click();
+  await expect(page.getByRole("button", { name: "حساب جديد" })).toBeVisible();
+  expect(
+    await page.evaluate(() => sessionStorage.getItem("knowlm-token")),
+  ).toBeNull();
+  const stale = await page.request.get("/v1/auth/me", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(stale.status()).toBe(401);
+  expect(
+    (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(401);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "حساب جديد" })).toBeVisible({
+    timeout: 20000,
+  });
+});

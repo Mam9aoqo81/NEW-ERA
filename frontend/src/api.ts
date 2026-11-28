@@ -37,6 +37,8 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Password confirmation failed":
+    "كلمة المرور غير صحيحة. لم يُحذف الحساب؛ أعد إدخالها للمحاولة.",
   "Deck not found": "مجموعة البطاقات غير متاحة.",
   "Card not found": "البطاقة غير متاحة أو حُذفت.",
   "Quiz not found": "الاختبار غير متاح.",

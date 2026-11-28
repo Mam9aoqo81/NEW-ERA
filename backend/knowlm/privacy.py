@@ -5,7 +5,7 @@ Child-first deletion supports schemas without ON DELETE CASCADE.
 """
 from sqlalchemy import delete, select
 
-from knowlm.main import ChatTurn, Chunk, IngestionJob, Notebook, Source
+from knowlm.main import ChatTurn, Chunk, IngestionJob, Notebook, Source, User, AuthSession
 from knowlm.learning import Card, Deck, Quiz, QuizAttempt, ReviewEvent, ReviewState, StudyArtifact
 
 
@@ -33,3 +33,15 @@ def erase_notebook(session, notebook_id):
     for statement in statements:
         session.execute(statement.execution_options(synchronize_session=False))
     # Caller commits once, never per table: failures must roll back all records.
+
+
+def erase_account(session, user_id):
+    notebook_ids = list(session.scalars(select(Notebook.id).where(
+        Notebook.owner_id == user_id).order_by(Notebook.id).with_for_update()))
+    for notebook_id in notebook_ids:
+        erase_notebook(session, notebook_id)
+    # Also remove this user's own activity should shared notebooks be added later.
+    for model in (QuizAttempt, ReviewEvent, ReviewState, AuthSession):
+        session.execute(delete(model).where(model.user_id == user_id).execution_options(synchronize_session=False))
+    session.execute(delete(User).where(User.id == user_id).execution_options(synchronize_session=False))
+    # No commit here: re-authentication route owns the single atomic transaction.

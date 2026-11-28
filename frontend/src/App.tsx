@@ -305,7 +305,8 @@ export default function App() {
     [create, setCreate] = useState(false),
     [error, setError] = useState(""),
     [llm, setLlm] = useState(false),
-    [mobileNav, setMobileNav] = useState(false);
+    [mobileNav, setMobileNav] = useState(false),
+    [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const clear = useCallback(() => {
     sessionStorage.removeItem("knowlm-token");
     setToken(null);
@@ -314,6 +315,8 @@ export default function App() {
     setSelected(null);
     setChecking(false);
     setFocus(false);
+    setDeleteAccountOpen(false);
+    setMobileNav(false);
   }, []);
   useEffect(() => {
     window.addEventListener("knowlm:expired", clear);
@@ -461,6 +464,14 @@ export default function App() {
             </div>
             <button
               className="icon-button"
+              aria-label="حذف الحساب"
+              title="حذف الحساب"
+              onClick={() => setDeleteAccountOpen(true)}
+            >
+              <Trash2 size={17} />
+            </button>
+            <button
+              className="icon-button"
               aria-label="تسجيل الخروج"
               onClick={logout}
             >
@@ -569,6 +580,14 @@ export default function App() {
           <span>KnowLM · مساحة للفهم</span>
         </footer>
       </div>
+      {deleteAccountOpen && user && (
+        <DeleteAccount
+          token={token}
+          username={user.username}
+          onDeleted={clear}
+          close={() => setDeleteAccountOpen(false)}
+        />
+      )}
       {create && (
         <CreateNotebook
           token={token}
@@ -630,6 +649,102 @@ function CreateNotebook({
         <button className="primary wide" disabled={busy || !title.trim()}>
           {busy ? <Busy /> : <Plus size={18} />} إنشاء الدفتر
         </button>
+      </form>
+    </Modal>
+  );
+}
+
+function DeleteAccount({
+  token,
+  username,
+  onDeleted,
+  close,
+}: {
+  token: string;
+  username: string;
+  onDeleted: () => void;
+  close: () => void;
+}) {
+  const [password, setPassword] = useState(""),
+    [confirmation, setConfirmation] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy || confirmation !== username) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api("/v1/auth/delete-account", token, json({ password }));
+      setPassword("");
+      onDeleted();
+    } catch (e) {
+      setError(errorMessage(e));
+      setPassword("");
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title="حذف الحساب نهائيًا؟"
+      close={() => {
+        if (!busy) close();
+      }}
+    >
+      <p className="muted">
+        سيُحذف حسابك وكل دفاترك ومصادرك ومحادثاتك وبطاقاتك ونتائجك من قاعدة
+        البيانات النشطة، وستُلغى كل جلسات الدخول. لا يمكن التراجع.
+      </p>
+      <p className="field-hint">
+        لا يشمل ذلك النسخ الاحتياطية أو بيانات سبق إرسالها لمزوّد خارجي أو نسخًا
+        سبق تنزيلها. لو انقطع الرد بعد التنفيذ، أعد تحميل الصفحة للتحقق من
+        صلاحية جلستك؛ فشل الاتصال وحده لا يؤكد الحذف.
+      </p>
+      <form onSubmit={submit}>
+        <label>
+          اكتب اسم المستخدم للتأكيد: {username}
+          <input
+            aria-label="اسم المستخدم لتأكيد حذف الحساب"
+            autoComplete="off"
+            value={confirmation}
+            disabled={busy}
+            onChange={(e) => setConfirmation(e.target.value)}
+          />
+        </label>
+        <label>
+          كلمة المرور الحالية
+          <input
+            type="password"
+            autoComplete="current-password"
+            minLength={10}
+            maxLength={128}
+            required
+            value={password}
+            disabled={busy}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+        <div className="confirm-actions">
+          <button
+            type="button"
+            className="outline"
+            disabled={busy}
+            onClick={close}
+          >
+            إلغاء حذف الحساب
+          </button>
+          <button
+            className="danger"
+            disabled={busy || confirmation !== username || password.length < 10}
+          >
+            {busy ? <Busy /> : <Trash2 size={16} />} حذف حسابي وكل دفاتري
+          </button>
+        </div>
       </form>
     </Modal>
   );

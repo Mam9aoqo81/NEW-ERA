@@ -18,7 +18,7 @@ from knowlm.generation import CitationError, ProviderError, validate_answer
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, SecretStr
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float, LargeBinary, JSON, UniqueConstraint, Index, select, update, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -111,6 +111,11 @@ class Credentials(BaseModel):
     password: str = Field(min_length=10, max_length=128)
 
 
+class AccountDeletionInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    password: SecretStr = Field(min_length=10, max_length=128)
+
+
 class NotebookInput(BaseModel):
     title: str = Field(min_length=1, max_length=200, pattern=r'\S')
 
@@ -149,8 +154,20 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.10.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.11.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
+    # FastAPI's default validation response includes raw input (including
+    # passwords/private source text). Return field metadata, never input values.
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        return JSONResponse(status_code=422, content={'detail': [
+            {'type': error['type'], 'loc': list(error['loc']), 'msg': error['msg']}
+            for error in exc.errors()
+        ]})
+
     bearer = HTTPBearer(auto_error=False)
 
     def db():
@@ -225,6 +242,21 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     def me(user_id=Depends(current_user), session: Session = Depends(db)):
         user = session.get(User, user_id)
         return {'id': user.id, 'username': user.username}
+
+    @app.post('/v1/auth/delete-account', status_code=204)
+    def delete_account(body: AccountDeletionInput, user_id=Depends(current_user), session: Session = Depends(db)):
+        user = session.scalar(select(User).where(User.id == user_id).with_for_update())
+        if not user:
+            raise HTTPException(401, 'Invalid or expired session')
+        candidate = password_hash(body.password.get_secret_value(), user.password_hash.split(':')[0])
+        if not hmac.compare_digest(candidate, user.password_hash):
+            # Incorrect re-authentication must not revoke a valid session.
+            raise HTTPException(403, 'Password confirmation failed')
+        from knowlm.privacy import erase_account
+        erase_account(session, user_id)
+        session.commit()
+        from fastapi.responses import Response
+        return Response(status_code=204)
 
     @app.post('/v1/auth/logout', status_code=204)
     def logout(auth: HTTPAuthorizationCredentials = Depends(bearer), user_id=Depends(current_user), session: Session = Depends(db)):
