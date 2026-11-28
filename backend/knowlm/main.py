@@ -149,6 +149,7 @@ def password_hash(password, salt=None):
 
 
 def create_app(database_url=None, *, initialize_schema=True, answer_provider=None, embedding_provider=None):
+    from knowlm.canvas import register_canvas
     from knowlm.community import register_community
     from knowlm.collaboration import Membership, access, register_collaboration
     from knowlm.sharing import register_sharing
@@ -613,6 +614,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 'citations': citations, 'retrieval': retrieval_mode,
                 'notice': 'مقتطفات بحث دلالي تجريبي؛ التشابه لا يثبت دعم الإجابة أو صحة الادعاءات.' if body.semantic_consent else 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
+    register_canvas(app, db, current_user, readable)
     register_community(app, db, current_user, owned)
     register_collaboration(app, db, current_user, owned)
     register_learning(app, db, current_user, editable, readable)

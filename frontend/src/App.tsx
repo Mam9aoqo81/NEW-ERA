@@ -2,6 +2,7 @@ import Community from "./Community";
 import Collaboration, { JoinNotebook } from "./Collaboration";
 import SharedLearning from "./Sharing";
 import StudyTools from "./StudyTools";
+import Canvas from "./Canvas";
 import { citationLabel, isTimed, safeVideoLink } from "./citations";
 import { useNotebookChat } from "./useNotebookChat";
 import {
@@ -1005,6 +1006,13 @@ function Workspace({
           <FileText size={16} /> المصادر <b>{sources.length}</b>
         </button>
       </div>
+      <Canvas
+        key={`${notebook.id}:${token}`}
+        notebookId={notebook.id}
+        token={token}
+        citation={citation}
+        onCitation={setCitation}
+      />
       {toolsOpen && (
         <StudyTools
           role={role}

@@ -1285,3 +1285,65 @@ test("explicit public publication → anonymous cards → save/follow/comment/re
     await recipient.close().catch(() => {});
   }
 });
+
+test("private ink canvas persists real pointer strokes and notes", async ({
+  page,
+}, info) => {
+  const username = `ink_${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  expect(
+    (
+      await page.request.post("/v1/auth/register", {
+        data: { username, password },
+      })
+    ).status(),
+  ).toBe(201);
+  const token = (
+    await (
+      await page.request.post("/v1/auth/login", {
+        data: { username, password },
+      })
+    ).json()
+  ).access_token;
+  const headers = { Authorization: `Bearer ${token}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر القلم" },
+      })
+    ).json()
+  ).id;
+  await page.goto("/");
+  await page.evaluate((t) => sessionStorage.setItem("knowlm-token", t), token);
+  await page.reload();
+  await page.getByText("لوحة المذاكرة بالقلم والملاحظات · خاصة بي").click();
+  const notes = page.getByLabel("ملاحظاتي النصية");
+  await expect(notes).toBeEnabled();
+  await notes.fill("ملاحظة محفوظة بالقلم");
+  const ink = page.getByRole("img", { name: /مساحة رسم بالقلم/ });
+  await ink.scrollIntoViewIfNeeded();
+  const box = (await ink.boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5, {
+    steps: 8,
+  });
+  await page.mouse.up();
+  await expect(ink.locator("polyline")).toHaveCount(1);
+  await page.getByRole("button", { name: "حفظ اللوحة", exact: true }).click();
+  await expect(page.getByText("تم حفظ اللوحة الخاصة")).toBeVisible();
+  const saved = await (
+    await page.request.get(`/v1/notebooks/${nid}/canvas`, { headers })
+  ).json();
+  expect(saved.strokes).toHaveLength(1);
+  expect(saved.strokes[0].points.length).toBeGreaterThan(1);
+  await page.reload();
+  await page.getByText("لوحة المذاكرة بالقلم والملاحظات · خاصة بي").click();
+  await expect(notes).toHaveValue("ملاحظة محفوظة بالقلم");
+  await expect(ink.locator("polyline")).toHaveCount(1);
+  await ink.screenshot({
+    path: `../backend/data/canvas-${info.project.name}.png`,
+  });
+  await page.request.delete(`/v1/notebooks/${nid}`, { headers });
+});
