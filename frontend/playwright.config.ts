@@ -31,11 +31,15 @@ export default defineConfig({
     launchOptions: {
       executablePath:
         process.env.KNOWLM_CHROMIUM_PATH || (await chromium.executablePath()),
-      args: chromium.args.filter(
-        (arg) =>
-          arg !== "--disable-web-security" &&
-          arg !== "--allow-running-insecure-content",
-      ),
+      args: [
+        "--use-fake-device-for-media-stream",
+        "--use-fake-ui-for-media-stream",
+        ...chromium.args.filter(
+          (arg) =>
+            arg !== "--disable-web-security" &&
+            arg !== "--allow-running-insecure-content",
+        ),
+      ],
     },
     screenshot: "only-on-failure",
   },

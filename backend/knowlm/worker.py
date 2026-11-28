@@ -114,7 +114,15 @@ def main():
     directory = os.getenv('KNOWLM_DATA_DIR', 'backend/data')
     engine = make_engine(os.getenv('DATABASE_URL', f'sqlite:///{directory}/knowlm.db'))
     logging.basicConfig(level=logging.INFO)
+    last_cleanup = 0.0
     while True:
+        if time.monotonic() - last_cleanup >= 30:
+            from knowlm.calls import purge_expired
+            try:
+                purge_expired(engine)
+            except Exception:
+                logger.warning("Call lease cleanup unavailable; verify migrations and database")
+            last_cleanup = time.monotonic()
         worked = run_once(engine)
         if args.once:
             break

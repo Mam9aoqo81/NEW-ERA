@@ -1751,3 +1751,193 @@ test("shared Pomodoro starts, pauses across accounts and survives reload without
     await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner });
   }
 });
+
+test("real WebRTC transports simulated camera/audio between two authorized accounts and stops on removal", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password";
+  async function account(username: string) {
+    await page.request.post("/v1/auth/register", {
+      data: { username, password },
+    });
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await account(`callowner_${suffix}`),
+    memberName = `callmember_${suffix}`,
+    memberToken = await account(memberName);
+  const owner = { Authorization: `Bearer ${ownerToken}` },
+    memberHeaders = { Authorization: `Bearer ${memberToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers: owner,
+        data: { title: "دفتر اختبار الاتصال" },
+      })
+    ).json()
+  ).id;
+  const invitation = await (
+    await page.request.post(`/v1/notebooks/${nid}/invitations`, {
+      headers: owner,
+      data: { username: memberName, role: "viewer", consent: true },
+    })
+  ).json();
+  await page.request.post("/v1/collaboration/accept", {
+    headers: { ...memberHeaders, "X-KnowLM-Invite": invitation.token },
+    data: { consent: true },
+  });
+  const context = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+    permissions: ["camera", "microphone"],
+  });
+  const member = await context.newPage();
+  const root = process.env.KNOWLM_TEST_URL || "http://127.0.0.1:5173";
+  async function prepare(target: typeof page, token: string) {
+    await target.addInitScript((t) => {
+      sessionStorage.setItem("knowlm-token", t);
+      const test = window as unknown as {
+        testPcs: RTCPeerConnection[];
+        testTracks: MediaStreamTrack[];
+      };
+      test.testPcs = [];
+      test.testTracks = [];
+      const Original = window.RTCPeerConnection;
+      window.RTCPeerConnection = class extends Original {
+        constructor(config?: RTCConfiguration) {
+          super(config);
+          test.testPcs.push(this);
+        }
+      };
+      const acquire = navigator.mediaDevices.getUserMedia.bind(
+        navigator.mediaDevices,
+      );
+      navigator.mediaDevices.getUserMedia = async (constraints) => {
+        const stream = await acquire(constraints);
+        test.testTracks.push(...stream.getTracks());
+        return stream;
+      };
+    }, token);
+    await target.goto(root);
+    await target
+      .getByRole("button", { name: "التعاون وغرفة الدفتر", exact: true })
+      .click();
+    await target
+      .getByRole("button", { name: "مكالمة صوت وفيديو · شخصان" })
+      .click();
+    const call = target.getByRole("region", { name: "مكالمة الدفتر" });
+    await call
+      .getByLabel("إرسال فيديو الكاميرا أيضًا (الافتراضي صوت فقط)")
+      .check();
+    await call.getByLabel(/أوافق على تشغيل الأجهزة المحددة/).check();
+    await call
+      .getByRole("button", { name: "انضم للمكالمة", exact: true })
+      .click();
+    await expect(
+      call.getByRole("button", { name: "إنهاء المكالمة وإيقاف الأجهزة" }),
+    ).toBeVisible();
+    return call;
+  }
+  try {
+    const ownCall = await prepare(page, ownerToken),
+      otherCall = await prepare(member, memberToken);
+    await expect(
+      ownCall.getByText("المكالمة متصلة", { exact: true }),
+    ).toBeVisible({ timeout: 20000 });
+    await expect(
+      otherCall.getByText("المكالمة متصلة", { exact: true }),
+    ).toBeVisible({ timeout: 20000 });
+    await expect
+      .poll(
+        () =>
+          otherCall
+            .getByLabel("وسائط المشارك الآخر")
+            .evaluate((element: HTMLVideoElement) => element.videoWidth),
+        { timeout: 15000 },
+      )
+      .toBeGreaterThan(0);
+    await expect
+      .poll(
+        () =>
+          member.evaluate(async () => {
+            const pcs = (window as unknown as { testPcs: RTCPeerConnection[] })
+              .testPcs;
+            let audio = 0,
+              video = 0;
+            for (const pc of pcs) {
+              const stats = await pc.getStats();
+              stats.forEach((s) => {
+                if (s.type === "inbound-rtp") {
+                  if ((s.kind || s.mediaType) === "audio")
+                    audio += s.bytesReceived || 0;
+                  if ((s.kind || s.mediaType) === "video")
+                    video += s.bytesReceived || 0;
+                }
+              });
+            }
+            return audio > 0 && video > 0;
+          }),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    await ownCall
+      .getByRole("button", { name: "كتم الميكروفون", exact: true })
+      .click();
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as { testTracks: MediaStreamTrack[] }).testTracks
+          .filter((t) => t.kind === "audio")
+          .every((t) => !t.enabled),
+      ),
+    ).toBe(true);
+    await otherCall.screenshot({
+      path: `../backend/data/call-${info.project.name}.png`,
+    });
+    const memberId = (
+      await (
+        await page.request.get("/v1/auth/me", { headers: memberHeaders })
+      ).json()
+    ).id;
+    expect(
+      (
+        await page.request.delete(`/v1/notebooks/${nid}/members/${memberId}`, {
+          headers: owner,
+        })
+      ).status(),
+    ).toBe(204);
+    await expect
+      .poll(
+        () =>
+          member.evaluate(() =>
+            (
+              window as unknown as { testTracks: MediaStreamTrack[] }
+            ).testTracks.every((t) => t.readyState === "ended"),
+          ),
+        { timeout: 12000 },
+      )
+      .toBe(true);
+    const leave = ownCall.getByRole("button", {
+      name: "إنهاء المكالمة وإيقاف الأجهزة",
+    });
+    if (await leave.count()) await leave.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            window as unknown as { testTracks: MediaStreamTrack[] }
+          ).testTracks.every((t) => t.readyState === "ended"),
+        ),
+      )
+      .toBe(true);
+  } finally {
+    await context.close();
+    await page.request.delete(`/v1/notebooks/${nid}`, { headers: owner });
+  }
+});

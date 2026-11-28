@@ -165,6 +165,8 @@ def register_collaboration(app,db,current_user,owned):
         lock(notebook_id,session);owned(notebook_id,user_id,session)
         member=session.get(Membership,(notebook_id,member_id))
         if member:
+            from knowlm.calls import erase_member_calls
+            erase_member_calls(session,notebook_id,member_id)
             username=session.get(User,member_id).username
             session.execute(delete(Invitation).where(Invitation.notebook_id==notebook_id,Invitation.username==username))
             session.delete(member)
@@ -177,6 +179,8 @@ def register_collaboration(app,db,current_user,owned):
         lock(notebook_id,session)
         notebook=access(notebook_id,user_id,session)
         if notebook.owner_id==user_id: raise HTTPException(409,'Owner cannot leave notebook')
+        from knowlm.calls import erase_member_calls
+        erase_member_calls(session,notebook_id,user_id)
         session.execute(delete(Membership).where(Membership.notebook_id==notebook_id,Membership.user_id==user_id))
         username=session.get(User,user_id).username
         session.execute(delete(Invitation).where(Invitation.notebook_id==notebook_id,Invitation.username==username))

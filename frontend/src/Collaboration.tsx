@@ -1,3 +1,4 @@
+import MediaCall from "./MediaCall";
 import Pomodoro from "./Pomodoro";
 import {
   useCallback,
@@ -182,6 +183,11 @@ export default function Collaboration({
           {settings && (
             <>
               <p>صلاحيتك: {label[settings.role]}</p>
+              <MediaCall
+                key={`call:${notebookId}`}
+                notebookId={notebookId}
+                token={token}
+              />
               <Pomodoro
                 key={notebookId}
                 notebookId={notebookId}
