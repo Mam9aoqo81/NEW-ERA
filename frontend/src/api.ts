@@ -37,6 +37,12 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Select sources explicitly for semantic retrieval":
+    "حدد المصادر صراحة قبل استخدام البحث الدلالي.",
+  "Semantic retrieval is not configured":
+    "البحث الدلالي غير مفعّل. ألغِ اختياره لاستخدام البحث المحلي.",
+  "Semantic retrieval unavailable; narrow selected sources or retry later":
+    "البحث الدلالي غير متاح. قلّل المصادر المحددة أو أعد المحاولة لاحقًا؛ لم يتم التحويل إلى بحث محلي تلقائيًا.",
   "Shared content is unavailable":
     "النسخة المشتركة غير متاحة: قد يكون الرابط غير صالح أو منتهيًا أو مُلغًى.",
   "Explicit sharing consent is required":

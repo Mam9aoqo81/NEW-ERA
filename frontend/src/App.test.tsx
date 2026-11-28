@@ -22,9 +22,11 @@ function mockApi({
   notebooks = [nb],
   expired = false,
   history = [],
+  semantic = false,
   deleteFails = false,
   deleteResponseLost = false,
 }: {
+  semantic?: boolean;
   deleteFails?: boolean;
   deleteResponseLost?: boolean;
   history?: unknown[];
@@ -37,7 +39,11 @@ function mockApi({
     async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const path = String(input);
       calls.push({ path, init });
-      if (path === "/health") return respond({ llm_configured: false });
+      if (path === "/health")
+        return respond({
+          llm_configured: false,
+          semantic_configured: semantic,
+        });
       if (path === "/v1/auth/me")
         return expired
           ? respond({ detail: "Invalid or expired session" }, 401)
@@ -165,6 +171,31 @@ describe("KnowLM study flow", () => {
       await screen.findByRole("heading", { level: 1, name: nb.title }),
     ).toBeVisible();
     expect(sessionStorage.getItem("knowlm-token")).toBe("test-session");
+  });
+  it("requires separate semantic consent and resets it when selected sources change", async () => {
+    signedIn();
+    const { calls } = mockApi({ semantic: true });
+    const user = userEvent.setup();
+    render(<App />);
+    const consent = await screen.findByRole("checkbox", {
+      name: /أوافق على إرسال السؤال وكل مقاطع/,
+    });
+    expect(consent).not.toBeChecked();
+    await user.click(consent);
+    await user.type(
+      screen.getByRole("textbox", { name: "سؤالك عن المصادر" }),
+      "البناء الضوئي",
+    );
+    await user.click(screen.getByRole("button", { name: "إرسال السؤال" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.path.endsWith("/ask"))).toBe(true),
+    );
+    expect(
+      JSON.parse(String(calls.find((c) => c.path.endsWith("/ask"))!.init.body))
+        .semantic_consent,
+    ).toBe(true);
+    await user.click(screen.getByRole("checkbox", { name: /محاضرة النباتات/ }));
+    expect(consent).not.toBeChecked();
   });
   it("creates the first notebook rather than showing fabricated content", async () => {
     signedIn();

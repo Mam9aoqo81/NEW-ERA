@@ -14,11 +14,12 @@ from typing import Literal
 
 from knowlm.database import make_engine
 from knowlm.retrieval import Evidence, retrieve
+from knowlm.semantic import EmbeddingError, hybrid_retrieve
 from knowlm.generation import CitationError, ProviderError, validate_answer
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, ConfigDict, SecretStr
+from pydantic import BaseModel, Field, ConfigDict, SecretStr, StrictBool
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float, LargeBinary, JSON, UniqueConstraint, Index, select, update, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -130,6 +131,7 @@ class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000, pattern=r'\S')
     source_ids: list[str] | None = Field(default=None, max_length=100)
     mode: Literal["extractive", "grounded"] = "extractive"
+    semantic_consent: StrictBool = False
 
 
 class YouTubeInput(BaseModel):
@@ -144,7 +146,7 @@ def password_hash(password, salt=None):
     return f'{salt}:{digest}'
 
 
-def create_app(database_url=None, *, initialize_schema=True, answer_provider=None):
+def create_app(database_url=None, *, initialize_schema=True, answer_provider=None, embedding_provider=None):
     from knowlm.sharing import register_sharing
     from knowlm.learning import register_learning
     from knowlm.limits import Limits, register_limits, quota_notebook, quota_source
@@ -157,7 +159,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.13.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.14.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
@@ -225,6 +227,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     @app.get('/health')
     def health():
         return {'status': 'ok', 'retrieval_mode': 'bm25_char_rrf', 'llm_configured': answer_provider is not None,
+                'semantic_configured': embedding_provider is not None,
                 'youtube_auto_fetch_enabled': os.getenv('KNOWLM_YOUTUBE_FETCH_ENABLED', '1') == '1'}
 
     @app.post('/v1/auth/register', status_code=201)
@@ -505,6 +508,8 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
         request_id = str(body.request_id)
         request_data = {'question': body.question, 'mode': body.mode,
                         'source_ids': sorted(set(body.source_ids)) if body.source_ids is not None else None}
+        if body.semantic_consent:
+            request_data['semantic_consent'] = True
         request_hash = hashlib.sha256(json.dumps(request_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         previous = session.scalar(select(ChatTurn).where(ChatTurn.notebook_id == notebook_id, ChatTurn.request_id == request_id))
         if previous:
@@ -530,6 +535,10 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                     raise HTTPException(409, 'Request ID was already used for a different question')
             return answer_snapshot(turn)
 
+        if body.mode == 'grounded' and answer_provider is None:
+            raise HTTPException(503, 'Generated mode is not configured; use extractive mode')
+        if body.semantic_consent and body.source_ids is None:
+            raise HTTPException(422, 'Select sources explicitly for semantic retrieval')
         query = select(Chunk, Source).join(Source, Source.id == Chunk.source_id).where(Source.notebook_id == notebook_id, Source.status == 'ready')
         if body.source_ids is not None:
             allowed = set(session.scalars(select(Source.id).where(Source.notebook_id == notebook_id)))
@@ -537,7 +546,17 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 raise HTTPException(404, 'Source not found')
             query = query.where(Source.id.in_(body.source_ids))
         candidates = [Evidence(c.id, s.id, s.title, c.page, c.text, c.start_seconds, c.end_seconds, s.external_url, s.transcript_origin, s.kind) for c, s in session.execute(query)]
-        hits = retrieve(body.question, candidates)
+        retrieval_mode = 'bm25_char_rrf'
+        if body.semantic_consent:
+            if embedding_provider is None:
+                raise HTTPException(503, 'Semantic retrieval is not configured')
+            try:
+                hits = hybrid_retrieve(body.question, candidates, embedding_provider)
+            except EmbeddingError:
+                raise HTTPException(503, 'Semantic retrieval unavailable; narrow selected sources or retry later')
+            retrieval_mode = 'embedding_bm25_rrf'
+        else:
+            hits = retrieve(body.question, candidates)
         evidence = [hit.evidence for hit in hits]
 
         def citation(item, quote):
@@ -551,8 +570,6 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                     'transcript_origin': item.transcript_origin,
                     'url': f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/chunks/{item.chunk_id}' if timestamped else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/paragraphs/{item.page}' if item.kind == 'docx' else f'/v1/notebooks/{notebook_id}/sources/{item.source_id}/pages/{item.page}'}
 
-        if body.mode == 'grounded' and answer_provider is None:
-            raise HTTPException(503, 'Generated mode is not configured; use extractive mode')
         if body.mode == 'grounded' and evidence:
             try:
                 generated = validate_answer(answer_provider.generate(body.question, evidence), evidence)
@@ -570,13 +587,13 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 rendered.append(claim.text + ' ' + ' '.join(markers))
             return persist({'mode': 'grounded', 'answered': bool(rendered),
                     'answer': '\n\n'.join(rendered) if rendered else 'لا توجد معلومات كافية في المصادر المحددة.',
-                    'citations': citations, 'retrieval': 'bm25_char_rrf',
+                    'citations': citations, 'retrieval': retrieval_mode,
                     'notice': 'تم التحقق من وجود الاقتباسات في المصادر؛ هذا لا يضمن صحة كل استنتاج دلاليًا.'})
         citations = [citation(item, item.text) for item in evidence]
         return persist({'mode': body.mode, 'answered': bool(citations),
                 'answer': '\n\n'.join(f'{c["quote"]} [{i}]' for i, c in enumerate(citations, 1)) if citations else 'لا توجد معلومات كافية في المصادر المحددة.',
-                'citations': citations, 'retrieval': 'bm25_char_rrf',
-                'notice': 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
+                'citations': citations, 'retrieval': retrieval_mode,
+                'notice': 'مقتطفات بحث دلالي تجريبي؛ التشابه لا يثبت دعم الإجابة أو صحة الادعاءات.' if body.semantic_consent else 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
     register_learning(app, db, current_user, owned)
     register_sharing(app, db, current_user, owned)

@@ -314,6 +314,7 @@ function PrivateApp() {
     [create, setCreate] = useState(false),
     [error, setError] = useState(""),
     [llm, setLlm] = useState(false),
+    [semantic, setSemantic] = useState(false),
     [mobileNav, setMobileNav] = useState(false),
     [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const clear = useCallback(() => {
@@ -360,8 +361,11 @@ function PrivateApp() {
     };
   }, [token]);
   useEffect(() => {
-    api<{ llm_configured: boolean }>("/health")
-      .then((h) => setLlm(h.llm_configured))
+    api<{ llm_configured: boolean; semantic_configured?: boolean }>("/health")
+      .then((h) => {
+        setLlm(h.llm_configured);
+        setSemantic(!!h.semantic_configured);
+      })
       .catch(() => setLlm(false));
   }, []);
   function login(t: string, u: User) {
@@ -543,6 +547,7 @@ function PrivateApp() {
             notebook={selected}
             token={token}
             llm={llm}
+            semantic={semantic}
             onDeleted={() => {
               const remaining = notebooks.filter((n) => n.id !== selected.id);
               setNotebooks(remaining);
@@ -763,11 +768,13 @@ function Workspace({
   notebook,
   token,
   llm,
+  semantic,
   onDeleted,
 }: {
   notebook: Notebook;
   token: string;
   llm: boolean;
+  semantic: boolean;
   onDeleted: () => void;
 }) {
   const [sources, setSources] = useState<Source[]>([]),
@@ -778,6 +785,7 @@ function Workspace({
     [question, setQuestion] = useState(""),
     [confirmClear, setConfirmClear] = useState(false),
     [mode, setMode] = useState<"extractive" | "grounded">("extractive"),
+    [semanticConsent, setSemanticConsent] = useState(false),
     [citation, setCitation] = useState<Citation | null>(null),
     [tab, setTab] = useState<"chat" | "sources">("chat"),
     [sampleBusy, setSampleBusy] = useState(false),
@@ -839,12 +847,15 @@ function Workspace({
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [chat.scrollRequest]);
+  useEffect(() => {
+    setSemanticConsent(false);
+  }, [selected.join(",")]);
   async function ask(e?: FormEvent, suggested?: string) {
     e?.preventDefault();
     const q = (suggested || question).trim();
     if (!q || !selected.length || busy || !chat.loaded || chat.loading) return;
     setQuestion("");
-    await chat.send(q, selected, mode);
+    await chat.send(q, selected, mode, semanticConsent);
   }
   async function olderMessages() {
     const el = chatScroll.current;
@@ -937,7 +948,11 @@ function Workspace({
         </span>
         <span className="local-label">
           <span className="little-dot" />
-          {llm ? "التوليد الاختياري متاح" : "البحث المحلي · دون إرسال خارجي"}
+          {semanticConsent
+            ? "البحث الدلالي · إرسال خارجي بموافقتك"
+            : llm
+              ? "التوليد الاختياري متاح"
+              : "البحث المحلي · دون إرسال خارجي"}
         </span>
       </div>
       <div className={`mobile-tabs ${toolsOpen ? "tools-hidden" : ""}`}>
@@ -1323,6 +1338,19 @@ function Workspace({
               </label>
               <span>{selected.length} مصادر محددة</span>
             </div>
+            {semantic && (
+              <label className="external-warning">
+                <input
+                  type="checkbox"
+                  checked={semanticConsent}
+                  onChange={(e) => setSemanticConsent(e.target.checked)}
+                />
+                أوافق على إرسال السؤال وكل مقاطع المصادر المحددة إلى مزوّد
+                embeddings الخارجي للبحث الدلالي التجريبي. قد تترتب تكلفة؛
+                التشابه ليس إثباتًا لصحة الإجابة. تُلغى الموافقة عند تغيير
+                المصادر.
+              </label>
+            )}
             {mode === "grounded" && (
               <p className="external-warning">
                 سيُرسل السؤال ومقتطفات المصادر المحددة إلى مزوّد التوليد الخارجي.
