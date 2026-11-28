@@ -1,3 +1,4 @@
+import Community from "./Community";
 import Collaboration, { JoinNotebook } from "./Collaboration";
 import SharedLearning from "./Sharing";
 import StudyTools from "./StudyTools";
@@ -216,6 +217,7 @@ function Auth({ onLogin }: { onLogin: (token: string, user: User) => void }) {
           </form>
           <div className="privacy-line">
             <ShieldCheck size={16} /> دفاترك خاصة. أنت تختار ما تضيفه.
+            <a href="/community">تصفّح مجتمع المراجعة</a>
           </div>
         </div>
         <footer>
@@ -296,6 +298,8 @@ function Auth({ onLogin }: { onLogin: (token: string, user: User) => void }) {
 }
 
 export default function App() {
+  if (window.location.pathname === "/community")
+    return <Community auth={(onLogin) => <Auth onLogin={onLogin} />} />;
   if (window.location.pathname === "/join")
     return <JoinNotebook auth={(onLogin) => <Auth onLogin={onLogin} />} />;
   return window.location.pathname === "/share" ? (
@@ -922,6 +926,9 @@ function Workspace({
           </div>
         </div>
         <div className="notebook-heading-actions">
+          <a className="outline" href="/community">
+            مجتمع المراجعة
+          </a>
           <button
             className="icon-button"
             style={role !== "owner" ? { display: "none" } : undefined}

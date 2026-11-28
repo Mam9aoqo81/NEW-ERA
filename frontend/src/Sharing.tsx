@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { PublicPublisher } from "./Community";
 import { api, json } from "./api";
 import "./sharing.css";
 
@@ -205,6 +206,13 @@ export function SharePublisher({
               <h4>روابط هذا الدفتر (آخر 100)</h4>
               {rows.map((row) => (
                 <article key={row.id}>
+                  {row.active && (
+                    <PublicPublisher
+                      shareId={row.id}
+                      token={token}
+                      title={row.title}
+                    />
+                  )}
                   <span>
                     {row.title} ·{" "}
                     {row.active

@@ -44,6 +44,19 @@ export type Page = {
 export type User = { id: string; username: string };
 
 const translations: Record<string, string> = {
+  "Unpublish before changing classification":
+    "المنشور موجود بتصنيف مختلف. ألغِ نشره أولًا قبل تغيير التصنيف.",
+  "Public post unavailable":
+    "المنشور غير متاح: قد يكون محذوفًا أو منتهيًا أو محجوبًا لهذا الحساب.",
+  "Public comment unavailable": "التعليق غير متاح أو لا تملك صلاحية حذفه.",
+  "Explicit public publishing consent is required":
+    "راجع النص وأكد موافقتك على نشره واسم حسابك للعامة.",
+  "Invalid curriculum classification":
+    "اختر تصنيفًا صالحًا للدولة والمرحلة والمادة.",
+  "Community quota reached":
+    "وصلت للحد الأقصى لهذه العملية في المجتمع. احذف عناصر قديمة أولًا.",
+  "Cannot follow yourself": "لا يمكنك متابعة حسابك نفسه.",
+  "Cannot block yourself": "لا يمكنك حظر حسابك نفسه.",
   "Notebook is read only":
     "صلاحيتك قارئ؛ تعديل الدفتر متاح للمحرر والمالك فقط.",
   "Invitation unavailable":

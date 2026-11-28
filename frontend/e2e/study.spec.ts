@@ -1077,3 +1077,211 @@ test("targeted notebook invitation → private chats → explicit room answer �
     await context.close().catch(() => {});
   }
 });
+
+test("explicit public publication → anonymous cards → save/follow/comment/report/block → unpublish", async ({
+  page,
+  browser,
+}, info) => {
+  const suffix = `${info.project.name}_${Date.now()}`,
+    password = "development-test-password",
+    title = `مراجعة عامة ${suffix}`;
+  async function account(username: string) {
+    expect(
+      (
+        await page.request.post("/v1/auth/register", {
+          data: { username, password },
+        })
+      ).status(),
+    ).toBe(201);
+    return (
+      await (
+        await page.request.post("/v1/auth/login", {
+          data: { username, password },
+        })
+      ).json()
+    ).access_token;
+  }
+  const ownerToken = await account(`public_owner_${suffix}`),
+    readerToken = await account(`public_reader_${suffix}`);
+  const headers = { Authorization: `Bearer ${ownerToken}` };
+  const nid = (
+    await (
+      await page.request.post("/v1/notebooks", {
+        headers,
+        data: { title: "دفتر لا يُنشر" },
+      })
+    ).json()
+  ).id;
+  const deck = (
+    await (
+      await page.request.post(`/v1/notebooks/${nid}/decks`, {
+        headers,
+        data: { title: "مجموعة عامة" },
+      })
+    ).json()
+  ).id;
+  expect(
+    (
+      await page.request.post(`/v1/decks/${deck}/cards`, {
+        headers,
+        data: { front: "سؤال للعامة", back: "إجابة للعامة" },
+      })
+    ).status(),
+  ).toBe(201);
+  const preview = await (
+    await page.request.get(`/v1/decks/${deck}/share-preview`, { headers })
+  ).json();
+  const share = await (
+    await page.request.post(`/v1/decks/${deck}/shares`, {
+      headers,
+      data: { title, consent: true, preview_hash: preview.preview_hash },
+    })
+  ).json();
+  await page.addInitScript(
+    (t) => sessionStorage.setItem("knowlm-token", t),
+    ownerToken,
+  );
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "أدوات المراجعة", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "مشاركة البطاقات", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: `نشر للمجتمع: ${title}`, exact: true })
+    .click();
+  const publish = page.getByRole("button", {
+    name: "تأكيد النشر العام",
+    exact: true,
+  });
+  await expect(publish).toBeDisabled();
+  await page
+    .getByLabel("اسم المنهج وإصداره", { exact: true })
+    .fill(`منهج تجريبي ${suffix}`);
+  await page
+    .getByRole("checkbox", { name: /راجعت كل النص وأملك حق نشره للعامة/ })
+    .check();
+  await publish.click();
+  const link = await page
+    .getByRole("link", { name: "فتح المنشور العام", exact: true })
+    .getAttribute("href");
+  expect(link).not.toContain(share.token);
+  const anonymous = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  const recipient = await browser.newContext({
+    viewport: page.viewportSize()!,
+    isMobile: info.project.name === "mobile",
+  });
+  try {
+    const guest = await anonymous.newPage();
+    await guest.goto(link!);
+    await expect(
+      guest.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
+    await guest.getByText("سؤال للعامة", { exact: true }).click();
+    await expect(
+      guest.getByText("إجابة للعامة", { exact: true }),
+    ).toBeVisible();
+    await expect(guest.getByText("دفتر لا يُنشر", { exact: true })).toHaveCount(
+      0,
+    );
+    expect(
+      await guest.evaluate(() => sessionStorage.getItem("knowlm-token")),
+    ).toBeNull();
+    await recipient.addInitScript(
+      (t) => sessionStorage.setItem("knowlm-token", t),
+      readerToken,
+    );
+    const reader = await recipient.newPage();
+    await reader.goto(link!);
+    await reader
+      .getByRole("button", { name: "حفظ المنشور", exact: true })
+      .click();
+    await expect(
+      reader.getByRole("button", { name: "إلغاء حفظ المنشور", exact: true }),
+    ).toBeVisible();
+    await reader
+      .getByRole("button", { name: "متابعة الناشر", exact: true })
+      .click();
+    await expect(
+      reader.getByRole("button", { name: "إلغاء متابعة الناشر", exact: true }),
+    ).toBeVisible();
+    await reader
+      .getByRole("textbox", { name: "تعليق عام", exact: true })
+      .fill("تعليق تجريبي ظاهر للعامة");
+    await expect(
+      reader.getByRole("button", { name: "نشر التعليق العام", exact: true }),
+    ).toBeDisabled();
+    await reader
+      .getByRole("checkbox", {
+        name: /أوافق على نشر التعليق واسم حسابي للعامة/,
+      })
+      .check();
+    await reader
+      .getByRole("button", { name: "نشر التعليق العام", exact: true })
+      .click();
+    await expect(reader.locator(".community-comment")).toContainText(
+      "تعليق تجريبي ظاهر للعامة",
+    );
+    await reader
+      .getByRole("button", { name: "إرسال بلاغ عن المنشور", exact: true })
+      .click();
+    await expect(reader.getByRole("status")).toContainText("استُلم البلاغ");
+    await reader.screenshot({
+      path: `../backend/data/community-${info.project.name}.png`,
+      fullPage: true,
+    });
+    expect(
+      await reader.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth,
+      ),
+    ).toBe(false);
+    await reader
+      .getByRole("button", { name: "حظر الناشر", exact: true })
+      .click();
+    await reader
+      .getByRole("button", { name: "تأكيد حظر الناشر", exact: true })
+      .click();
+    await expect(
+      reader.getByRole("link", { name: title, exact: true }),
+    ).toHaveCount(0);
+    await reader
+      .getByRole("button", {
+        name: `إلغاء حظر public_owner_${suffix}`,
+        exact: true,
+      })
+      .click();
+    await reader
+      .getByLabel("اسم المنهج وإصداره بالتطابق الكامل", { exact: true })
+      .fill(`منهج تجريبي ${suffix}`);
+    await reader.getByRole("link", { name: title, exact: true }).click();
+    await expect(
+      reader.getByRole("heading", { name: title, exact: true }),
+    ).toBeVisible();
+    await page.goto(link!);
+    await page
+      .getByRole("button", { name: "إلغاء النشر العام", exact: true })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "تأكيد إلغاء النشر العام وحذف تعليقاته وحفظه من القوائم",
+        exact: true,
+      })
+      .click();
+    await guest.reload();
+    await expect(guest.getByRole("alert")).toContainText("المنشور غير متاح");
+    expect(
+      (
+        await page.request.get("/v1/shared/view", {
+          headers: { "X-KnowLM-Share": share.token },
+        })
+      ).status(),
+    ).toBe(200);
+  } finally {
+    await anonymous.close().catch(() => {});
+    await recipient.close().catch(() => {});
+  }
+});

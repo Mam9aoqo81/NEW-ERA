@@ -18,6 +18,8 @@ def erase_notebook(session, notebook_id):
     from knowlm.sharing import LearningShare, ShareImport, ShareReport
     session.execute(delete(ShareImport).where(ShareImport.notebook_id == notebook_id).execution_options(synchronize_session=False))
     session.execute(delete(ShareReport).where(ShareReport.share_id.in_(select(LearningShare.id).where(LearningShare.notebook_id == notebook_id))).execution_options(synchronize_session=False))
+    from knowlm.community import CommunityPost, erase_posts
+    erase_posts(session, select(CommunityPost.id).where(CommunityPost.share_id.in_(select(LearningShare.id).where(LearningShare.notebook_id == notebook_id))))
     session.execute(delete(LearningShare).where(LearningShare.notebook_id == notebook_id).execution_options(synchronize_session=False))
     sources = select(Source.id).where(Source.notebook_id == notebook_id)
     decks = select(Deck.id).where(Deck.notebook_id == notebook_id)
@@ -54,6 +56,11 @@ def erase_account(session, user_id):
     session.execute(delete(Invitation).where(Invitation.username == username).execution_options(synchronize_session=False))
     for model in (Membership, RoomMessage, ChatTurn):
         session.execute(delete(model).where(model.user_id == user_id).execution_options(synchronize_session=False))
+    from knowlm.community import PostComment, SavedPost, Follow, UserBlock
+    for model in (PostComment, SavedPost):
+        session.execute(delete(model).where(model.user_id == user_id).execution_options(synchronize_session=False))
+    session.execute(delete(Follow).where((Follow.follower_id == user_id) | (Follow.publisher_id == user_id)).execution_options(synchronize_session=False))
+    session.execute(delete(UserBlock).where((UserBlock.blocker_id == user_id) | (UserBlock.blocked_id == user_id)).execution_options(synchronize_session=False))
     # Also remove this user's own activity should shared notebooks be added later.
     from knowlm.sharing import ShareReport
     session.execute(delete(ShareReport).where(ShareReport.reporter_id == user_id).execution_options(synchronize_session=False))

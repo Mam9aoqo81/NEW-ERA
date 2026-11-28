@@ -149,6 +149,7 @@ def password_hash(password, salt=None):
 
 
 def create_app(database_url=None, *, initialize_schema=True, answer_provider=None, embedding_provider=None):
+    from knowlm.community import register_community
     from knowlm.collaboration import Membership, access, register_collaboration
     from knowlm.sharing import register_sharing
     from knowlm.learning import register_learning
@@ -162,7 +163,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
     if initialize_schema:
         Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = FastAPI(title='KnowLM', version='0.17.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
+    app = FastAPI(title='KnowLM', version='0.18.0', description='Private notebooks, durable PDF ingestion, evaluated lexical retrieval and optional cited generation.')
     app.state.engine = engine
     register_limits(app, engine, limits)
     # FastAPI's default validation response includes raw input (including
@@ -612,6 +613,7 @@ def create_app(database_url=None, *, initialize_schema=True, answer_provider=Non
                 'citations': citations, 'retrieval': retrieval_mode,
                 'notice': 'مقتطفات بحث دلالي تجريبي؛ التشابه لا يثبت دعم الإجابة أو صحة الادعاءات.' if body.semantic_consent else 'مقتطفات بحث نصي وليست إجابة مولدة أو تحققًا من صحة الادعاءات.'})
 
+    register_community(app, db, current_user, owned)
     register_collaboration(app, db, current_user, owned)
     register_learning(app, db, current_user, editable, readable)
     register_sharing(app, db, current_user, owned)
